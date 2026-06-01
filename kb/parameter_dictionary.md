@@ -1,0 +1,37 @@
+# Parameter_Dictionary
+
+Source sheet: `Parameter_Dictionary`
+
+Rows: 28 data rows  
+Columns: 10
+
+| Parameter | Unit | Sampling depth | Suggested method | Why it matters in coffee | Low/deficient concern | Practical target / adequate band | High/excess concern | Hidden parameter to capture | Confidence |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| pH | 1:2.5 water or lab method | 0-22 cm / active root zone | pH meter | Controls nutrient availability, aluminium toxicity and fertilizer efficiency | <5.0 severe acidity; 5.0-5.4 acid stress | 5.5-6.5 practical coffee target; 6.0-6.5 often good in leached coffee soils | >7.0 may reduce Fe/Zn/B availability | Exchangeable acidity, Al saturation, Ca/Mg status | High |
+| Electrical conductivity | dS/m | 0-22 cm | EC meter | Indicates soluble salt risk and fertilizer concentration | Very low not a direct problem unless nutrient-poor | <0.5 for most rainfed coffee soils | >1.0 caution; >2.0 high salt/fertilizer injury risk | Recent fertilizer application, irrigation water EC | Medium |
+| Organic carbon | % | 0-22 cm | Walkley-Black/TOC | Drives CEC, microbial activity, moisture retention, nutrient cycling | <0.5 low; 0.5-0.75 medium | 0.75-1.5 good; >1.5 very good in shaded systems | >3.0 may indicate undecomposed organic accumulation/wetness; interpret with C:N | Mulch depth, shade litter, compost quality | High |
+| C:N ratio | ratio | 0-22 cm | TOC/TN | Indicates decomposition and N mineralization balance | <8 rapid mineralization/low carbon reserve | 10-15 balanced | >20 N immobilization risk | Type of mulch, compost maturity | Medium |
+| Available nitrogen | kg/ha | 0-22 cm | Alkaline KMnO4 or local lab method | Supports vegetative flush, berry development and recovery after harvest | <280 low | 280-560 medium; higher values interpreted with crop load | >560 high; luxury/leafy growth or leaching risk if mismanaged | Rainfall, split timing, leaf N, crop load | Medium |
+| Available phosphorus | kg/ha P2O5 equivalent or lab reporting | 0-22 cm | Bray/Olsen as per pH | Important for root growth, blossom/fruit set and early berry development | <10 low; fixation risk under acidity | 10-25 medium; >25 adequate depending crop load | >50 high; may induce Zn issues/wasteful | pH, Al/Fe oxides, mycorrhiza, P method used | Medium |
+| Available potassium | kg/ha K2O equivalent or lab reporting | 0-22 cm | Neutral ammonium acetate | Key for berry filling, bean size, drought tolerance and disease resilience | <108 low | 108-280 medium; >280 adequate for bearing coffee | >500 very high; Mg/Ca antagonism risk | Crop load, Mg status, rainfall leaching | High |
+| Exchangeable calcium | cmol(+)/kg | 0-22 cm | Ammonium acetate | Root growth, cell wall strength, acidity buffering | <2 low in acid coffee soils | 3-8 generally adequate | >10 high; may suppress Mg/K if imbalanced | pH, lime history, Ca:Mg ratio | Medium |
+| Exchangeable magnesium | cmol(+)/kg | 0-22 cm | Ammonium acetate | Chlorophyll, enzyme function; common deficiency in leached acidic soils | <0.5 low | 0.8-2.5 adequate | >4 high; may antagonize K/Ca | Dolomite history, K:Mg ratio | Medium |
+| Sulphur | mg/kg | 0-22 cm | CaCl2/Turbidimetric | Flower bud initiation, protein synthesis; useful in high rainfall zones | <10 low | 10-20 adequate | >40 high; acidity/salt context needed | S source, rainfall leaching | Medium |
+| Zinc | mg/kg DTPA | 0-22 cm | DTPA | Internode elongation, leaf size and growth hormones | <0.6 low | 0.6-2.0 adequate | >5 possible excess/interaction | High P, pH >6.5, organic matter | Medium |
+| Boron | mg/kg hot water | 0-22 cm | Hot water soluble B | Flowering, pollen viability, fruit set and berry retention; narrow safe range | <0.5 low | 0.5-1.0 adequate | >2.0 toxicity risk | Rainfall leaching, liming, organic matter | Medium |
+| Iron | mg/kg DTPA | 0-22 cm | DTPA | Chlorophyll synthesis; generally sufficient in acidic lateritic soils | <4.5 low | 4.5-20 adequate | >50 excess possible under waterlogging/acidity | Drainage, pH, Mn interaction | Medium |
+| Manganese | mg/kg DTPA | 0-22 cm | DTPA | Photosynthesis; toxicity possible in strongly acidic/waterlogged soils | <2 low | 2-20 adequate | >50 possible toxicity in low pH soils | pH, drainage, redox | Medium |
+| Copper | mg/kg DTPA | 0-22 cm | DTPA | Enzyme function and disease resistance | <0.2 low | 0.2-2 adequate | >5 excess risk, especially repeated copper sprays | Bordeaux history, organic matter | Medium |
+| CEC | cmol(+)/kg | 0-22 cm | Ammonium acetate/sum bases | Nutrient holding capacity and buffering | <5 low | 8-20 suitable for many coffee soils | >30 high clay/OM; drainage check needed | Clay %, organic carbon | Medium |
+| Base saturation | % | 0-22 cm | Calculated | Indicates proportion of exchange complex occupied by Ca, Mg, K, Na | <35 acid infertility risk | 45-70 desirable in many coffee soils | >80 alkaline/imbalance risk | Exchangeable Al, pH, lime history | Medium |
+| Aluminium saturation | % | 0-22 cm | Exchangeable Al | Root toxicity indicator in acid soils | >20 caution; >40 severe risk | <10 preferred | High values are harmful not beneficial | pH, Ca, root depth | Medium |
+| Bulk density | g/cm3 | 0-15 cm | Core method | Compaction and root penetration | >1.4 in clay loam high compaction risk | 0.9-1.25 in good shaded organic soil | <0.7 may be very loose/organic; check method | Traffic, erosion, OM | Medium |
+| Infiltration rate | mm/hour | Field ring infiltrometer | Water entry, runoff and erosion risk | <10 poor infiltration | 20-80 good depending texture | >150 very rapid; leaching/drought risk in coarse soils | Slope, mulch, texture | Medium |  |
+| Soil moisture at sampling | % or field class | Root zone | Gravimetric/sensor | Interprets current stress and nutrient movement | <15 low in dry spells | 20-35 adequate for many loams | >45 waterlogging risk in heavy soils | Recent rainfall/irrigation | Medium |
+| Microbial biomass carbon | mg/kg | 0-15 cm | Fumigation extraction/PLFA proxy | Living microbial pool linked to nutrient cycling | <150 low biological activity | 250-600 good | >1000 very high; interpret with moisture/OM | Organic inputs, fungicide/copper, moisture | Emerging |
+| Soil respiration | mg CO2-C/kg/day or field CO2 burst | 0-15 cm | Incubation/CO2 burst | Microbial activity and decomposition | <20 low | 40-120 active | >200 rapid decomposition/unstable carbon | Moisture, temperature, fresh manure | Emerging |
+| FDA hydrolysis | ug fluorescein/g/hr | 0-15 cm | FDA assay | Broad enzyme activity indicator | <20 low | 30-100 good | >150 high, check fresh organic amendment | Organic matter, moisture, lab protocol | Emerging |
+| Dehydrogenase activity | ug TPF/g/day | 0-15 cm | TTC reduction | Active microbial oxidative metabolism | <20 low | 30-100 good | >150 very high; interpret with organic additions | Moisture, pesticide stress | Emerging |
+| Acid phosphatase | ug pNP/g/hr | 0-15 cm | Enzyme assay | Biological P mineralization, often high in acid soils | <50 low | 100-400 active | >600 may indicate P stress/acid biological activity | pH, available P, mycorrhiza | Emerging |
+| Mycorrhizal colonization | % root length | Fine roots | Root staining/molecular proxy | Improves P uptake and drought resilience | <20 low | 30-70 good | >80 high; confirm root health | P level, fungicide, shade | Emerging |
+| Root health score | 1-5 | Fine roots | Visual + pathogen test | Direct indicator of feeder root function | 1-2 poor | 4-5 healthy | NA | Nematodes, root disease, drainage | High |

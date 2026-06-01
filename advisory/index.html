@@ -1,0 +1,866 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Coffee Advisory</title>
+  <link
+    href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,700;1,400&family=DM+Sans:wght@300;400;500&display=swap"
+    rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #0e0b08;
+      --surface: #1a1410;
+      --card: #221c16;
+      --border: #3a2e24;
+      --gold: #c8973a;
+      --gold-dim: #8a6425;
+      --cream: #f0e6d3;
+      --muted: #7a6a58;
+      --green: #4a7c59;
+      --red: #9b3a3a;
+      --text: #e8ddd0;
+      --radius: 14px;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'DM Sans', sans-serif;
+      font-weight: 300;
+      height: 100dvh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* ── Header ── */
+    header {
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 18px 28px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+    }
+
+    .logo {
+      width: 38px;
+      height: 38px;
+      background: var(--gold);
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      font-size: 18px;
+      flex-shrink: 0;
+    }
+
+    header h1 {
+      font-family: 'Playfair Display', serif;
+      font-size: 1.15rem;
+      font-weight: 400;
+      color: var(--cream);
+      letter-spacing: 0.01em;
+    }
+
+    header p {
+      font-size: 0.75rem;
+      color: var(--muted);
+      margin-top: 1px;
+    }
+
+    .profile-pill {
+      margin-left: auto;
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .pill {
+      font-size: 0.7rem;
+      padding: 3px 10px;
+      border-radius: 99px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      color: var(--muted);
+    }
+
+    .pill span {
+      color: var(--gold);
+    }
+
+    /* ── Layout ── */
+    .layout {
+      flex: 1;
+      display: flex;
+      overflow: hidden;
+    }
+
+    /* ── Chat area ── */
+    .chat-col {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    #messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 24px 28px;
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+      scroll-behavior: smooth;
+    }
+
+    #messages::-webkit-scrollbar {
+      width: 4px;
+    }
+
+    #messages::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    #messages::-webkit-scrollbar-thumb {
+      background: var(--border);
+      border-radius: 2px;
+    }
+
+    .msg {
+      display: flex;
+      gap: 12px;
+      max-width: 720px;
+      animation: fadein 0.25s ease;
+    }
+
+    @keyframes fadein {
+      from {
+        opacity: 0;
+        transform: translateY(6px);
+      }
+
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    .msg.user {
+      flex-direction: row-reverse;
+      align-self: flex-end;
+    }
+
+    .avatar {
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      font-size: 14px;
+      flex-shrink: 0;
+      margin-top: 2px;
+    }
+
+    .msg.assistant .avatar {
+      background: var(--gold);
+      color: #1a1410;
+    }
+
+    .msg.user .avatar {
+      background: var(--card);
+      border: 1px solid var(--border);
+      color: var(--muted);
+    }
+
+    .bubble {
+      padding: 12px 16px;
+      border-radius: var(--radius);
+      line-height: 1.65;
+      font-size: 0.9rem;
+    }
+
+    .msg.assistant .bubble {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-top-left-radius: 4px;
+      color: var(--text);
+    }
+
+    .msg.user .bubble {
+      background: var(--gold-dim);
+      border: 1px solid var(--gold);
+      border-top-right-radius: 4px;
+      color: var(--cream);
+    }
+
+    /* markdown styling inside bubbles */
+    .bubble strong {
+      color: var(--cream);
+      font-weight: 500;
+    }
+
+    .bubble em {
+      color: var(--gold);
+      font-style: italic;
+    }
+
+    .bubble hr {
+      border: none;
+      border-top: 1px solid var(--border);
+      margin: 10px 0;
+    }
+
+    .bubble p {
+      margin-bottom: 8px;
+    }
+
+    .bubble p:last-child {
+      margin-bottom: 0;
+    }
+
+    /* ── Typing indicator ── */
+    .typing-dot {
+      display: inline-flex;
+      gap: 4px;
+      padding: 14px 18px;
+    }
+
+    .typing-dot span {
+      width: 6px;
+      height: 6px;
+      background: var(--gold-dim);
+      border-radius: 50%;
+      animation: bounce 1.2s infinite;
+    }
+
+    .typing-dot span:nth-child(2) {
+      animation-delay: 0.2s;
+    }
+
+    .typing-dot span:nth-child(3) {
+      animation-delay: 0.4s;
+    }
+
+    @keyframes bounce {
+
+      0%,
+      80%,
+      100% {
+        transform: translateY(0);
+      }
+
+      40% {
+        transform: translateY(-6px);
+      }
+    }
+
+    /* ── Input zone ── */
+    .input-zone {
+      flex-shrink: 0;
+      padding: 16px 28px 20px;
+      border-top: 1px solid var(--border);
+      background: var(--surface);
+    }
+
+    /* ── Choose input buttons (step 0) ── */
+    #choose-panel {
+      display: flex;
+      gap: 12px;
+    }
+
+    .choose-btn {
+      flex: 1;
+      padding: 14px;
+      border-radius: var(--radius);
+      border: 1px solid var(--border);
+      background: var(--card);
+      color: var(--text);
+      font-family: 'DM Sans', sans-serif;
+      font-size: 0.9rem;
+      cursor: pointer;
+      transition: border-color 0.2s, background 0.2s;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .choose-btn:hover {
+      border-color: var(--gold);
+      background: var(--card);
+    }
+
+    .choose-btn .icon {
+      font-size: 1.6rem;
+    }
+
+    .choose-btn .label {
+      font-weight: 500;
+      color: var(--cream);
+    }
+
+    .choose-btn .sub {
+      font-size: 0.75rem;
+      color: var(--muted);
+    }
+
+    /* ── Variety picker ── */
+    #variety-panel {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .var-btn {
+      padding: 8px 14px;
+      border-radius: 99px;
+      border: 1px solid var(--border);
+      background: var(--card);
+      color: var(--text);
+      font-family: 'DM Sans', sans-serif;
+      font-size: 0.82rem;
+      cursor: pointer;
+      transition: border-color 0.2s, color 0.2s;
+    }
+
+    .var-btn:hover {
+      border-color: var(--gold);
+      color: var(--gold);
+    }
+
+    /* ── PDF upload panel ── */
+    #pdf-panel {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .drop-zone {
+      width: 100%;
+      border: 2px dashed var(--border);
+      border-radius: var(--radius);
+      padding: 22px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color 0.2s;
+      position: relative;
+    }
+
+    .drop-zone:hover,
+    .drop-zone.drag-over {
+      border-color: var(--gold);
+    }
+
+    .drop-zone input[type=file] {
+      position: absolute;
+      inset: 0;
+      opacity: 0;
+      cursor: pointer;
+      width: 100%;
+    }
+
+    .drop-zone .dz-icon {
+      font-size: 1.8rem;
+    }
+
+    .drop-zone .dz-text {
+      font-size: 0.85rem;
+      color: var(--muted);
+      margin-top: 6px;
+    }
+
+    .drop-zone .dz-file {
+      font-size: 0.82rem;
+      color: var(--gold);
+      margin-top: 4px;
+    }
+
+    .upload-btn {
+      padding: 10px 28px;
+      border-radius: 99px;
+      border: none;
+      background: var(--gold);
+      color: #1a1410;
+      font-family: 'DM Sans', sans-serif;
+      font-weight: 500;
+      font-size: 0.88rem;
+      cursor: pointer;
+      transition: opacity 0.2s;
+    }
+
+    .upload-btn:disabled {
+      opacity: 0.4;
+      cursor: default;
+    }
+
+    .upload-btn:not(:disabled):hover {
+      opacity: 0.85;
+    }
+
+    /* ── Text input row ── */
+    #text-panel {
+      display: flex;
+      gap: 10px;
+      align-items: flex-end;
+    }
+
+    textarea {
+      flex: 1;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text);
+      font-family: 'DM Sans', sans-serif;
+      font-size: 0.9rem;
+      padding: 12px 16px;
+      resize: none;
+      line-height: 1.5;
+      min-height: 48px;
+      max-height: 140px;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+
+    textarea::placeholder {
+      color: var(--muted);
+    }
+
+    textarea:focus {
+      border-color: var(--gold-dim);
+    }
+
+    .send-btn {
+      width: 44px;
+      height: 44px;
+      border-radius: 50%;
+      border: none;
+      background: var(--gold);
+      color: #1a1410;
+      font-size: 1.1rem;
+      cursor: pointer;
+      display: grid;
+      place-items: center;
+      flex-shrink: 0;
+      transition: opacity 0.2s;
+    }
+
+    .send-btn:disabled {
+      opacity: 0.35;
+      cursor: default;
+    }
+
+    .send-btn:not(:disabled):hover {
+      opacity: 0.85;
+    }
+
+    /* ── Soil panel (right sidebar) ── */
+    .soil-col {
+      width: 220px;
+      flex-shrink: 0;
+      border-left: 1px solid var(--border);
+      background: var(--surface);
+      padding: 20px 16px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .soil-col h3 {
+      font-family: 'Playfair Display', serif;
+      font-size: 0.85rem;
+      font-weight: 400;
+      color: var(--gold);
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+
+    .soil-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px 10px;
+      border-radius: 8px;
+      background: var(--card);
+      border: 1px solid var(--border);
+    }
+
+    .soil-item .s-key {
+      font-size: 0.78rem;
+      color: var(--muted);
+    }
+
+    .soil-item .s-val {
+      font-size: 0.9rem;
+      color: var(--cream);
+      font-weight: 500;
+    }
+
+    .soil-item.trigger {
+      border-color: var(--red);
+    }
+
+    .soil-item.trigger .s-val {
+      color: #e07070;
+    }
+
+    .soil-item.ok {
+      border-color: var(--green);
+    }
+
+    .soil-item.ok .s-val {
+      color: #7abf8f;
+    }
+
+    .soil-empty {
+      font-size: 0.78rem;
+      color: var(--muted);
+      line-height: 1.6;
+    }
+
+    /* ── Responsive ── */
+    @media (max-width: 640px) {
+      .soil-col {
+        display: none;
+      }
+
+      #messages {
+        padding: 16px;
+      }
+
+      .input-zone {
+        padding: 12px 16px 16px;
+      }
+
+      header {
+        padding: 14px 16px;
+      }
+
+      .profile-pill {
+        display: none;
+      }
+    }
+  </style>
+</head>
+
+<body>
+
+  <header>
+    <div>
+      <h1>Coffee Advisory</h1>
+      <p>Soil intelligence for South Indian coffee farmers</p>
+    </div>
+    <div class="profile-pill" id="profile-pills"></div>
+  </header>
+
+  <div class="layout">
+
+    <!-- Chat column -->
+    <div class="chat-col">
+      <div id="messages"></div>
+
+      <div class="input-zone">
+        <!-- Step 0: choose -->
+        <div id="choose-panel" style="display:none">
+          <button class="choose-btn" onclick="chooseInput('manual')">
+            <span class="label">Enter manually</span>
+            <span class="sub">Type your soil values</span>
+          </button>
+          <button class="choose-btn" onclick="chooseInput('upload')">
+            <span class="label">Upload PDF</span>
+            <span class="sub">Soil test report</span>
+          </button>
+        </div>
+
+        <!-- PDF upload -->
+        <div id="pdf-panel" style="display:none">
+          <div class="drop-zone" id="drop-zone">
+            <input type="file" id="pdf-file" accept=".pdf" onchange="onFileChosen(this)" />
+            <div class="dz-text">Upload your soil test report pdf here</div>
+            <div class="dz-file" id="dz-filename"></div>
+          </div>
+          <button class="upload-btn" id="upload-btn" disabled onclick="uploadPdf()">Upload & Analyse</button>
+        </div>
+
+        <!-- Variety picker -->
+        <div id="variety-panel" style="display:none"></div>
+
+        <!-- Text input -->
+        <div id="text-panel" style="display:none">
+          <textarea id="input" rows="1" placeholder="Type a message…" oninput="autoResize(this)"
+            onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendMessage();}">
+        </textarea>
+          <button class="send-btn" id="send-btn" onclick="sendMessage()">➤</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Soil sidebar -->
+    <div class="soil-col">
+      <h3>Soil Values</h3>
+      <div id="soil-display">
+        <p class="soil-empty">Your soil parameters will appear here once entered or extracted from a PDF.</p>
+      </div>
+    </div>
+
+  </div>
+
+  <script>
+    const API = 'http://127.0.0.1:8000';
+    const SESSION_ID = 'session-' + Math.random().toString(36).slice(2, 9);
+    let currentStep = 'choose_input';
+    let selectedFile = null;
+
+    // ── Thresholds for sidebar colouring ──────────────────────────────────────
+    const TRIGGER = {
+      pH: v => v < 5.5 || v > 6.5,
+      OC: v => v < 0.75,
+      N: v => v < 200,
+      P: v => v < 10,
+      K: v => v < 100,
+      Zn: v => v < 0.6,
+      B: v => v < 0.2,
+    };
+
+    // ── Markdown renderer (minimal) ───────────────────────────────────────────
+    function renderMd(text) {
+      return text
+        .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+        .replace(/\*(.+?)\*/g, '<em>$1</em>')
+        .replace(/_(.+?)_/g, '<em>$1</em>')
+        .replace(/^---$/gm, '<hr>')
+        .replace(/\n/g, '<br>');
+    }
+
+    // ── Add a message bubble ──────────────────────────────────────────────────
+    function addMsg(role, text) {
+      const wrap = document.getElementById('messages');
+      const div = document.createElement('div');
+      div.className = `msg ${role}`;
+      div.innerHTML = `
+    <div class="avatar">${role === 'assistant' ? '🤖' : '🧑'}</div>
+    <div class="bubble">${renderMd(text)}</div>`;
+      wrap.appendChild(div);
+      wrap.scrollTop = wrap.scrollHeight;
+      return div;
+    }
+
+    function addTyping() {
+      const wrap = document.getElementById('messages');
+      const div = document.createElement('div');
+      div.className = 'msg assistant';
+      div.id = 'typing';
+      div.innerHTML = `<div class="avatar">🤖</div>
+    <div class="bubble"><div class="typing-dot"><span></span><span></span><span></span></div></div>`;
+      wrap.appendChild(div);
+      wrap.scrollTop = wrap.scrollHeight;
+    }
+
+    function removeTyping() {
+      const el = document.getElementById('typing');
+      if (el) el.remove();
+    }
+
+    // ── Profile pills ─────────────────────────────────────────────────────────
+    function updateProfile(ud) {
+      const el = document.getElementById('profile-pills');
+      el.innerHTML = '';
+      if (ud.name) el.innerHTML += `<div class="pill">👤 <span>${ud.name}</span></div>`;
+      if (ud.location) el.innerHTML += `<div class="pill">📍 <span>${ud.location}</span></div>`;
+      if (ud.crop) el.innerHTML += `<div class="pill">🌱 <span>${ud.crop}${ud.variety ? ' — ' + ud.variety : ''}</span></div>`;
+      if (ud.farm_size && ud.farm_size !== 'Not provided')
+        el.innerHTML += `<div class="pill">🏡 <span>${ud.farm_size} ha</span></div>`;
+    }
+
+    // ── Soil sidebar ──────────────────────────────────────────────────────────
+    function updateSoil(soil) {
+      const el = document.getElementById('soil-display');
+      if (!soil || !Object.keys(soil).length) return;
+      const UNITS = { pH: '', OC: '%', N: 'kg/ha', P: 'kg/ha', K: 'kg/ha', Zn: 'mg/kg', B: 'mg/kg' };
+      el.innerHTML = Object.entries(soil).map(([k, v]) => {
+        const bad = TRIGGER[k] && TRIGGER[k](parseFloat(v));
+        return `<div class="soil-item ${bad ? 'trigger' : 'ok'}">
+      <span class="s-key">${k}</span>
+      <span class="s-val">${v} ${UNITS[k] || ''}</span>
+    </div>`;
+      }).join('');
+    }
+
+    // ── Panel switcher ────────────────────────────────────────────────────────
+    function showPanel(name) {
+      ['choose-panel', 'pdf-panel', 'variety-panel', 'text-panel'].forEach(id => {
+        document.getElementById(id).style.display = 'none';
+      });
+      if (name) document.getElementById(name).style.display =
+        (name === 'choose-panel' || name === 'pdf-panel') ? 'flex' : 'flex';
+    }
+
+    // ── Variety buttons ───────────────────────────────────────────────────────
+    const VARIETIES = {
+      Arabica: ['Cauvery', 'Kent/old Arabica', 'Selection 9', 'Chandragiri', 'S.795'],
+      Robusta: ['CxR', 'Peridenia', 'Old Robusta', 'Clonal Robusta', 'S.274'],
+      Coffee: ['Cauvery', 'Kent/old Arabica', 'Selection 9', 'Chandragiri', 'S.795',
+        'CxR', 'Peridenia', 'Old Robusta', 'Clonal Robusta', 'S.274'],
+    };
+
+    function showVarietyPanel(crop) {
+      const panel = document.getElementById('variety-panel');
+      const list = VARIETIES[crop] || VARIETIES['Coffee'];
+      panel.innerHTML = list.map(v =>
+        `<button class="var-btn" onclick="selectVariety('${v}')">${v}</button>`
+      ).join('');
+      showPanel('variety-panel');
+    }
+
+    // ── API calls ─────────────────────────────────────────────────────────────
+    async function api(endpoint, body) {
+      const res = await fetch(API + endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      return res.json();
+    }
+
+    function handleResponse(data) {
+      removeTyping();
+      if (!data || data.detail) {
+        addMsg('assistant', '⚠️ Something went wrong. Please try again.');
+        return;
+      }
+      currentStep = data.step;
+      updateProfile(data.user_data || {});
+      updateSoil((data.user_data || {}).measured_soil);
+
+      // Show correct input panel
+      if (data.step === 'choose_input') {
+        showPanel('choose-panel');
+      } else if (data.step === 'upload_pdf') {
+        showPanel('pdf-panel');
+      } else if (data.step === 'ask_variety') {
+        showVarietyPanel((data.user_data || {}).crop || 'Coffee');
+      } else {
+        showPanel('text-panel');
+        document.getElementById('input').focus();
+      }
+
+      setInputEnabled(true);
+    }
+
+    // ── Init session ──────────────────────────────────────────────────────────
+    async function init() {
+      const data = await api('/session/new', { session_id: SESSION_ID });
+      // Show greeting from session
+      if (data.messages && data.messages.length) {
+        addMsg('assistant', data.messages[0].content);
+      }
+      showPanel('choose-panel');
+    }
+
+    // ── Choose input method ───────────────────────────────────────────────────
+    async function chooseInput(choice) {
+      showPanel(null);
+      addTyping();
+      setInputEnabled(false);
+      const data = await api('/chat/choose_input', { session_id: SESSION_ID, choice });
+      addMsg('assistant', data.response);
+      handleResponse(data);
+    }
+
+    // ── Send text message ─────────────────────────────────────────────────────
+    async function sendMessage() {
+      const ta = document.getElementById('input');
+      const text = ta.value.trim();
+      if (!text) return;
+      ta.value = '';
+      ta.style.height = '';
+      addMsg('user', text);
+      addTyping();
+      setInputEnabled(false);
+      const data = await api('/chat/message', { session_id: SESSION_ID, message: text });
+      addMsg('assistant', data.response);
+      handleResponse(data);
+    }
+
+    // ── Select variety ────────────────────────────────────────────────────────
+    async function selectVariety(variety) {
+      showPanel(null);
+      addMsg('user', variety);
+      addTyping();
+      setInputEnabled(false);
+      const data = await api('/chat/select_variety', { session_id: SESSION_ID, variety });
+      addMsg('assistant', data.response);
+      handleResponse(data);
+    }
+
+    // ── PDF upload ────────────────────────────────────────────────────────────
+    function onFileChosen(input) {
+      selectedFile = input.files[0];
+      document.getElementById('dz-filename').textContent = selectedFile ? selectedFile.name : '';
+      document.getElementById('upload-btn').disabled = !selectedFile;
+    }
+
+    async function uploadPdf() {
+      if (!selectedFile) return;
+      showPanel(null);
+      addMsg('user', `📎 ${selectedFile.name}`);
+      addTyping();
+      setInputEnabled(false);
+
+      const form = new FormData();
+      form.append('session_id', SESSION_ID);
+      form.append('file', selectedFile);
+
+      const res = await fetch(API + '/chat/upload_pdf', { method: 'POST', body: form });
+      const data = await res.json();
+      addMsg('assistant', data.response);
+      handleResponse(data);
+    }
+
+    // ── Drag-and-drop ─────────────────────────────────────────────────────────
+    const dz = document.getElementById('drop-zone');
+    dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('drag-over'); });
+    dz.addEventListener('dragleave', () => dz.classList.remove('drag-over'));
+    dz.addEventListener('drop', e => {
+      e.preventDefault();
+      dz.classList.remove('drag-over');
+      const f = e.dataTransfer.files[0];
+      if (f && f.type === 'application/pdf') {
+        selectedFile = f;
+        document.getElementById('dz-filename').textContent = f.name;
+        document.getElementById('upload-btn').disabled = false;
+      }
+    });
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+    function setInputEnabled(on) {
+      ['send-btn', 'upload-btn'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.disabled = !on;
+      });
+      const ta = document.getElementById('input');
+      if (ta) ta.disabled = !on;
+    }
+
+    function autoResize(el) {
+      el.style.height = '';
+      el.style.height = Math.min(el.scrollHeight, 140) + 'px';
+    }
+
+    // ── Start ──────────────────────────────────────────────────────────────────
+    init();
+  </script>
+</body>
+
+</html>

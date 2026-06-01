@@ -1,0 +1,32 @@
+# Core API
+fastapi
+uvicorn
+python-multipart
+pydantic
+
+# Data handling
+pandas
+openpyxl
+
+# PDF extraction
+pdfplumber
+pypdf
+
+# Vector DB + embeddings
+chromadb
+sentence-transformers
+
+# LLM client
+ollama
+
+# ML / Torch backend
+torch
+transformers
+
+# Utilities
+numpy
+scikit-learn
+tqdm
+
+# Optional
+typing-extensions
