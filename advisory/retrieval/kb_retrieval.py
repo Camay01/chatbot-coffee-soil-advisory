@@ -24,7 +24,10 @@ GROUNDING FIXES (this version):
 
 from __future__ import annotations
 
+import logging
 import re
+
+logger = logging.getLogger(__name__)
 
 from config import SOIL_PARAMS
 from .retriever import retrieve, check_zone_exists
@@ -216,6 +219,7 @@ def kb_retrieve(
             break
 
     if not all_docs:
+        logger.warning("KB retrieval: all expand_query variants returned nothing | query=%s", query[:80])
         # General fallback — broaden the query
         docs = retrieve("coffee soil nutrients interpretation bands advisory pH N P K")
         all_docs = [str(d) if not isinstance(d, str) else d for d in docs]
@@ -262,8 +266,12 @@ def kb_retrieve(
     )
     cleaned = [ZONE_ROW_RE.sub("", d).strip() for d in top_docs]
 
-    # FIX 1: If cleaned list is empty, return sentinel to prevent hallucination
+    # FIX-9: log when sentinel fires so retrieval failures are visible in server logs
     if not any(c for c in cleaned):
+        logger.warning(
+            "KB retrieval sentinel fired | query=%s | zone=%s | crop=%s",
+            query[:80], zone, crop,
+        )
         return [_RETRIEVAL_FAILURE_SENTINEL]
 
     return [c for c in cleaned if c] or [_RETRIEVAL_FAILURE_SENTINEL]

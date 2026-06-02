@@ -47,7 +47,7 @@ from units.input_parser import (
 )
 from units.pdf_extractor import extract_soil_from_pdf, detect_zone_from_pdf
 from retrieval.pdf_response_builder import build_pdf_extraction_response
-from retrieval.advisory import answer_soil_question, generate_advisory
+from retrieval.advisory import answer_soil_question, generate_advisory, _is_out_of_scope
 from retrieval.retriever import check_zone_exists
 
 app = FastAPI(
@@ -74,6 +74,8 @@ def read_root():
 # Session store  (in-memory — replace with Redis before production)
 # ---------------------------------------------------------------------------
 sessions: dict[str, dict[str, Any]] = {}
+import time as _time
+_SESSION_TTL_SECONDS = 3600  # FIX-8: 1 hour TTL — prevents unbounded memory growth
 
 # BUG-4 FIX: module-level constant so both PDF endpoints stay in sync.
 # Add any new secondary/metadata keys here; both endpoints pick them up.
@@ -85,6 +87,13 @@ _SECONDARY_KEYS: frozenset[str] = frozenset({
 
 
 def _get_session(session_id: str) -> dict[str, Any]:
+    now = _time.time()
+    # FIX-8: evict expired sessions to prevent unbounded memory growth
+    expired = [k for k, v in list(sessions.items())
+               if now - v.get("_last_active", 0) > _SESSION_TTL_SECONDS]
+    for k in expired:
+        del sessions[k]
+
     if session_id not in sessions:
         sessions[session_id] = {
             "step": "choose_input",
@@ -100,6 +109,7 @@ def _get_session(session_id: str) -> dict[str, Any]:
             "user_data": {},
             "processed_pdfs": set(),
         }
+    sessions[session_id]["_last_active"] = now
     return sessions[session_id]
 
 
@@ -166,9 +176,11 @@ def _handle_pdf_bytes(
         crop_found and crop_found.lower() in {"coffee", "arabica", "robusta"}
     )
     if not non_coffee and not coffee_already_confirmed:
-        text_sample = raw_text.lower()
+        # FIX-13: limit to first 600 chars — prevents companion-crop footnotes
+        # (e.g. "pepper intercrop" on page 3) triggering a false mismatch
+        text_sample = raw_text[:600].lower()
         if "tea board" not in text_sample and "cabbage board" not in text_sample:
-            non_coffee = detect_non_coffee_crop(raw_text)
+            non_coffee = detect_non_coffee_crop(raw_text[:600])
 
     if not non_coffee and (not crop_found or crop_found.lower() == "unknown"):
         if "coffee" in raw_text.lower() or "arabica" in raw_text.lower() or "robusta" in raw_text.lower():
@@ -504,11 +516,14 @@ def chat_message(req: ChatRequest) -> ChatResponse:
                 ud["name"] = "Grower"
                 next_q = "No problem! Which district or zone is your farm in?"
                 prefill_profile_from_message(prompt, ud)
-                if is_question(prompt):
+                _oos2 = _is_out_of_scope(prompt)
+                if _oos2:
+                    side = _oos2
+                elif is_question(prompt):
                     side = answer_soil_question(prompt, ud)
-                    response = f"{side}\n\n{next_q}" if side else next_q
                 else:
-                    response = next_q
+                    side = ""
+                response = f"{side}\n\n{next_q}" if side else next_q
                 session["step"] = "ask_location"
             elif extracted_name:
                 ud["name"] = extracted_name
@@ -608,11 +623,14 @@ def chat_message(req: ChatRequest) -> ChatResponse:
             next_q = "And what are you growing — Arabica, Robusta, or something else?"
             session["step"] = "ask_crop"
 
-        if is_question(prompt) and not contains_profile_info(prompt):
+        _oos = _is_out_of_scope(prompt)
+        if _oos:
+            side = _oos
+        elif is_question(prompt) and not contains_profile_info(prompt):
             side = answer_soil_question(prompt, ud)
-            response = f"{side}\n\n{next_q}" if side else next_q
         else:
-            response = next_q
+            side = ""
+        response = f"{side}\n\n{next_q}" if side else next_q
 
     # ── ask_crop ──────────────────────────────────────────────────────────
     elif session["step"] == "ask_crop":
@@ -655,11 +673,14 @@ def chat_message(req: ChatRequest) -> ChatResponse:
             "Do you have any **soil test values** handy? Type what you know "
             "(e.g. *'pH 5.5, N 280, Zn 0.6'*) — or just type **skip** to move on."
         )
-        if is_question(prompt) and not contains_profile_info(prompt):
+        _oos = _is_out_of_scope(prompt)
+        if _oos:
+            side = _oos
+        elif is_question(prompt) and not contains_profile_info(prompt):
             side = answer_soil_question(prompt, ud)
-            response = f"{side}\n\n{next_q}" if side else next_q
         else:
-            response = next_q
+            side = ""
+        response = f"{side}\n\n{next_q}" if side else next_q
         session["step"] = "ask_soil"
 
     # ── complete (RAG chat) ───────────────────────────────────────────────

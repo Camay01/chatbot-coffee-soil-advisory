@@ -123,6 +123,31 @@ _SOIL_PARSE_RE = re.compile(
 _PPM_PARAMS = {"N", "P", "K"}   # these need conversion if unit is ppm/mg/kg
 
 
+
+# FIX-5: plausibility bounds — guards against OCR artifacts (e.g. pH 99999 from table noise)
+_PLAUSIBLE_RANGES: dict[str, tuple[float, float]] = {
+    "pH": (2.0, 10.0),
+    "OC": (0.01, 20.0),
+    "N":  (0.0, 2000.0),
+    "P":  (0.0, 500.0),
+    "K":  (0.0, 2000.0),
+    "Zn": (0.0, 50.0),
+    "B":  (0.0, 10.0),
+}
+
+def _validate_soil_values(parsed: dict) -> dict:
+    """Reject any value outside physically plausible bounds."""
+    out = {}
+    for k, v in parsed.items():
+        bounds = _PLAUSIBLE_RANGES.get(k)
+        if bounds:
+            lo, hi = bounds
+            if lo <= v <= hi:
+                out[k] = v
+        else:
+            out[k] = v
+    return out
+
 def parse_soil_input(raw: str) -> dict:
     """
     Extract soil parameter values from freeform text.
@@ -164,7 +189,7 @@ def parse_soil_input(raw: str) -> dict:
         result[key] = val
 
     if result:
-        return result
+        return _validate_soil_values(result)
 
     # ── LLM fallback ─────────────────────────────────────────────────────────
     if not contains_soil_data(raw):
@@ -200,7 +225,9 @@ def parse_soil_input(raw: str) -> dict:
         parsed = ast.literal_eval(clean)
         if not isinstance(parsed, dict):
             return {}
-        return {k: float(v) for k, v in parsed.items() if k in _ALL_PARAM_KEYS}
+        raw_parsed = {k: float(v) for k, v in parsed.items() if k in _ALL_PARAM_KEYS}
+        # FIX-5: validate plausible ranges — rejects both OCR artifacts and adversarial inputs
+        return _validate_soil_values(raw_parsed)
     except Exception:
         return {}
 

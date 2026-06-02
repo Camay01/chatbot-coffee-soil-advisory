@@ -1,46 +1,30 @@
 """
 advisory.py — Generate soil advisory from classified soil parameters.
 
-HALLUCINATION / GROUNDING FIXES (this version):
-
-  FIX-1 — YIELD / PLANT HEALTH HALLUCINATION PREVENTION:
-    Added explicit FORBIDDEN OUTPUT rules to system prompt. The LLM is now
-    told it MUST NOT mention yield percentages, root health, leaf symptoms,
-    growth descriptions, or plant health unless the user's message explicitly
-    asked about those topics. This directly addresses the "10–20% yield loss"
-    and "stunted growth" hallucinations.
-
-  FIX-2 — CALCIUM GUESSING PREVENTION:
-    Added to FORBIDDEN rules: never say "Calcium may be within range" or
-    guess values for unmeasured secondary parameters. Secondary params are
-    shown as reference only; the LLM must not speculate on them.
-
-  FIX-3 — CONSISTENCY: ONE PRIORITY ORDER:
-    Priority ranking is now set deterministically in the prompt (not left to
-    the LLM to decide turn-by-turn). The trigger_block already lists params
-    in fixed _ADVISORY_ORDER. The system prompt now explicitly says:
-    "The priority order for this advisory is: [params in order of severity]."
-    This prevents "Fix Boron first" vs "Fix Zinc first" flip-flopping.
-
-  FIX-4 — RECOMMENDATION SECTION FROM PDF:
-    A new `pdf_recommendations` field in user_data stores the text extracted
-    from the PDF's RECOMMENDATION section (before truncation). If present,
-    it is injected into the system prompt as AUTHORITATIVE and the LLM is
-    told to prefer it over generic KB advice.
-    In pdf_extractor.py the _extract_recommendation_section() helper captures
-    the text after the recommendation marker.
-
-  FIX-5 — SULPHUR CONTEXT RETENTION (secondary params always passed):
-    secondary_vals now also includes any keys from user_data["secondary_soil"]
-    that came from the PDF path. Previously only manual-entry secondary was
-    passed; PDF-extracted Ca/Mg/S were lost.
-
-(Previous fixes from earlier version retained.)
+FIXES IN THIS VERSION:
+  FIX-1  _priority_order computed on demand if not yet set (first-question bug).
+  FIX-2  S and Mg moved to SOIL_THRESHOLDS → deterministic trigger + advisory anchor.
+  FIX-3  Compound rule checker (pH+Mg → dolomite specifically; texture+pH → P fixation).
+  FIX-4  Post-LLM adequate-param filter strips sentences that name adequate params
+         alongside action verbs — prevents P/K MEDIUM recommendations.
+  FIX-5  _build_adequate_block() uses explicit DO NOT language per-param.
+  FIX-6  pH deficit shown as absolute pH units, not percentage (FIX in soil_classifier).
+  FIX-7  pH-moderate weight raised to 58 (from 55) to break explicit tie with N-LOW=55.
+  FIX-8  Session TTL eviction added to _get_session() in app.py.
+  FIX-9  Retrieval sentinel fires logged (uses Python logging).
+  FIX-10 Texture-aware compound rules (SoilType + pH → P fixation note).
+  FIX-11 Threshold centralised in config.py — soil_classifier imports from there.
+  FIX-12 Startup assertion verifies every triggered SOIL_THRESHOLDS band has a weight.
+  FIX-13 detect_non_coffee_crop() limited to first 600 chars of raw PDF text.
+  FIX-14 Out-of-scope gate called before profile-info branch in every onboarding step.
 """
 
 from __future__ import annotations
 
-from config import SOIL_PARAMS
+import logging
+import re
+
+from config import SOIL_PARAMS, SOIL_THRESHOLDS
 from units.soil_classifier import (
     classify_soil_params,
     build_classified_soil_block,
@@ -49,25 +33,25 @@ from units.soil_classifier import (
     ph_severity_note,
 )
 from .kb_retrieval import kb_retrieve
-from units.llm_client   import llm_call
+from units.llm_client import llm_call
 
+logger = logging.getLogger(__name__)
 
-_ADVISORY_ORDER = ["pH", "OC", "N", "P", "K", "Zn", "B"]
+# Extended advisory order — S and Mg now classified deterministically (FIX-2)
+_ADVISORY_ORDER = ["pH", "OC", "N", "P", "K", "Zn", "B", "S", "Mg"]
 
 _ADVISORY_TEMPLATES: dict[str, dict[str, str]] = {
     "pH": {
         "severe acidity — below 5.0": (
-            "PRIORITY 1 — SOIL ACIDITY (SEVERE): pH {val} is well below the 5.5–6.5 target. "
+            "PRIORITY — SOIL ACIDITY (SEVERE): pH {val} is well below the 5.5–6.5 target. "
             "Phosphorus fixation is active; aluminium/manganese may be toxic. "
-            "Apply agricultural lime or dolomite (prefer dolomite if Mg is also low). "
-            "Timing: November (pre-blossom), separate from NPK by ≥2 weeks. "
-            "NPK application should be DELAYED until pH correction is underway."
+            "Apply dolomite (preferred if Mg is also low) or agricultural lime. "
+            "Timing: November, separate from NPK by ≥2 weeks. Delay NPK until correction is underway."
         ),
         "moderately acidic — below target range": (
-            "PRIORITY 1 — SOIL ACIDITY (MODERATE): pH {val} is below the 5.5–6.5 target. "
+            "SOIL ACIDITY (MODERATE): pH {val} is below the 5.5–6.5 target. "
             "Phosphorus availability may be partially reduced. "
-            "Apply lime or dolomite before the next NPK cycle. "
-            "Timing: November, separate from fertilisers."
+            "Apply lime or dolomite before the next NPK cycle. Timing: November, separate from fertilisers."
         ),
         "above target range — monitor alkalinity": (
             "MONITOR — pH {val} is above the 5.5–6.5 target. "
@@ -77,11 +61,10 @@ _ADVISORY_TEMPLATES: dict[str, dict[str, str]] = {
     "OC": {
         "very low organic carbon — needs urgent attention": (
             "ORGANIC CARBON (CRITICAL): OC {val}% is very low. "
-            "Apply green manure, compost, or farm-yard manure (10–15 t/ha). "
-            "Maintain mulch cover year-round. Avoid burning prunings."
+            "Apply green manure, compost, or FYM (10–15 t/ha). Maintain mulch year-round."
         ),
         "low organic carbon — below adequate level": (
-            "ORGANIC CARBON (LOW): OC {val}% is below the adequate level (≥0.75%). "
+            "ORGANIC CARBON (LOW): OC {val}% is below adequate (≥0.75%). "
             "Increase organic inputs — compost or FYM at 5–10 t/ha. Retain shade leaf litter."
         ),
     },
@@ -95,8 +78,7 @@ _ADVISORY_TEMPLATES: dict[str, dict[str, str]] = {
     "P": {
         "LOW — deficient (<10 kg/ha)": (
             "PHOSPHORUS (LOW): P {val} kg/ha is deficient. "
-            "Under acidic soil conditions phosphorus fixation is active — "
-            "correct pH before or alongside P application. "
+            "Correct pH before or alongside P application — acidic soil causes P fixation. "
             "Apply SSP or rock phosphate; band placement improves efficiency. "
             "Typical dose: 20–30 kg P₂O₅/ha."
         ),
@@ -104,27 +86,45 @@ _ADVISORY_TEMPLATES: dict[str, dict[str, str]] = {
     "K": {
         "LOW — deficient (<100 kg/ha)": (
             "POTASSIUM (LOW): K {val} kg/ha is deficient. "
-            "Apply MOP (muriate of potash) or SOP. "
-            "Split: half at blossom shower (February–March), half post-monsoon (August)."
+            "Apply MOP or SOP. Split: half at blossom shower (Feb–Mar), half post-monsoon (Aug)."
         ),
     },
     "Zn": {
         "LOW — deficient (<0.6 mg/kg)": (
             "ZINC (LOW): Zn {val} mg/kg is deficient. "
-            "Apply zinc sulphate (ZnSO₄·7H₂O) at 25 kg/ha to soil, "
-            "or foliar spray 0.5% ZnSO₄ twice during active flush."
+            "Apply ZnSO₄·7H₂O at 25 kg/ha to soil, or foliar spray 0.5% ZnSO₄ twice during flush."
         ),
     },
     "B": {
         "LOW — deficient (<0.5 mg/kg)": (
             "BORON (LOW): B {val} mg/kg is deficient. "
-            "Boron is critical for flowering and berry setting in coffee. "
-            "Apply borax at 1–2 kg/ha to soil, or foliar spray 0.2% borax "
-            "at pre-blossom and post-blossom stages."
+            "Boron is critical for flowering and berry setting. "
+            "Apply borax at 1–2 kg/ha to soil, or foliar spray 0.2% borax at pre- and post-blossom."
         ),
         "MARGINAL — borderline (0.5–1.0 mg/kg)": (
             "BORON (MARGINAL): B {val} mg/kg is borderline. "
-            "Monitor and consider foliar spray 0.1–0.2% borax at blossom stage."
+            "Consider foliar spray 0.1–0.2% borax at blossom stage."
+        ),
+    },
+    # FIX-2: S and Mg now have deterministic templates
+    "S": {
+        "LOW — deficient (<10 mg/kg)": (
+            "SULPHUR (LOW): S {val} mg/kg is below the 10 mg/kg threshold. "
+            "Apply bentonite sulphur (e.g. 90% S granules) at 20–25 kg/ha, "
+            "or single superphosphate which contains sulphur. "
+            "Sulphur leaches readily in high-rainfall zones — include in annual programme."
+        ),
+    },
+    "Mg": {
+        "LOW-CRITICAL — severely deficient (<0.5 cmol/kg)": (
+            "MAGNESIUM (CRITICALLY LOW): Mg {val} cmol/kg is severely deficient. "
+            "Apply dolomite if pH also needs correction — dolomite corrects both simultaneously. "
+            "Alternatively, apply magnesium sulphate (Kieserite) at 50–75 kg/ha."
+        ),
+        "LOW — below adequate (0.5–0.9 cmol/kg)": (
+            "MAGNESIUM (LOW): Mg {val} cmol/kg is below adequate (0.9). "
+            "Apply dolomite if soil is acidic (corrects both pH and Mg). "
+            "If pH is adequate, apply magnesium sulphate at 25–50 kg/ha."
         ),
     },
 }
@@ -138,20 +138,19 @@ def _get_template(param: str, status: str, value: float) -> str:
             if band_key.lower() in status.lower() or status.lower() in band_key.lower():
                 template = tmpl
                 break
-    if template:
-        return template.format(val=value)
-    return ""
+    return template.format(val=value) if template else ""
 
 
 # ---------------------------------------------------------------------------
-# Severity weights for deterministic ranking (Bug #3/#9 fix)
-# Higher = more severe = higher priority.
-# Weights encode: (a) crop-critical function, (b) irreversibility, (c) cascade effect.
+# FIX-7: Severity weights — pH-moderate raised to 58 to break explicit tie
+# with N-LOW=55. Documented reasoning in comment.
 # ---------------------------------------------------------------------------
 _SEVERITY_WEIGHTS: dict[str, dict[str, int]] = {
     "pH": {
         "severe acidity — below 5.0":            100,
-        "moderately acidic — below target range": 55,  # FIX-5: reduced from 70 so severe micronutrient deficiencies (B=65) correctly outrank moderate pH
+        # FIX-7: raised from 55 → 58. pH correction must precede N application
+        # because uncorrected acidity reduces fertiliser efficiency.
+        "moderately acidic — below target range": 58,
         "above target range — monitor alkalinity": 30,
     },
     "OC": {
@@ -163,12 +162,17 @@ _SEVERITY_WEIGHTS: dict[str, dict[str, int]] = {
     "K":  {"LOW — deficient (<100 kg/ha)": 45},
     "Zn": {"LOW — deficient (<0.6 mg/kg)": 50},
     "B":  {
-        "LOW — deficient (<0.5 mg/kg)":          65,   # B>Zn: flowering/fruit-set critical
+        "LOW — deficient (<0.5 mg/kg)":          65,
         "MARGINAL — borderline (0.5–1.0 mg/kg)": 35,
+    },
+    # FIX-2: S and Mg added to severity weights
+    "S":  {"LOW — deficient (<10 mg/kg)": 48},
+    "Mg": {
+        "LOW-CRITICAL — severely deficient (<0.5 cmol/kg)": 62,
+        "LOW — below adequate (0.5–0.9 cmol/kg)":           42,
     },
 }
 
-# Reason sentences for each status — stored for Bug #10 explainability
 _SEVERITY_REASONS: dict[str, dict[str, str]] = {
     "pH": {
         "severe acidity — below 5.0":
@@ -179,54 +183,130 @@ _SEVERITY_REASONS: dict[str, dict[str, str]] = {
     },
     "B": {
         "LOW — deficient (<0.5 mg/kg)":
-            "Boron directly controls flower fertility, berry setting, and bean retention in coffee "
-            "(KB rule R011). A single season of Boron deficiency can cause severe crop loss.",
+            "Boron directly controls flower fertility, berry setting, and bean retention in coffee. "
+            "A single season of Boron deficiency can cause severe crop loss.",
         "MARGINAL — borderline (0.5–1.0 mg/kg)":
             "Boron is borderline — risk of reduced fruit set at blossom.",
     },
     "Zn": {
         "LOW — deficient (<0.6 mg/kg)":
             "Zinc deficiency impairs enzyme activity and new leaf development. "
-            "Priority is below Boron because Zinc affects vegetative growth, "
-            "not the reproductive stage directly.",
+            "Priority is below Boron because Zinc affects vegetative growth, not the reproductive stage.",
     },
     "N":  {"LOW — deficient (<200 kg/ha)":
            "Nitrogen is the primary yield-building nutrient — deficiency reduces biomass accumulation."},
-    "OC": {"very low organic carbon — needs urgent attention":
-           "Very low OC collapses soil structure, water retention, and long-term fertility.",
-           "low organic carbon — below adequate level":
-           "Low OC reduces microbial activity and nutrient cycling."},
+    "OC": {
+        "very low organic carbon — needs urgent attention":
+            "Very low OC collapses soil structure, water retention, and long-term fertility.",
+        "low organic carbon — below adequate level":
+            "Low OC reduces microbial activity and nutrient cycling.",
+    },
     "P":  {"LOW — deficient (<10 kg/ha)":
            "Phosphorus deficiency limits root development and energy transfer."},
     "K":  {"LOW — deficient (<100 kg/ha)":
            "Potassium deficiency reduces drought tolerance and bean quality."},
+    "S":  {"LOW — deficient (<10 mg/kg)":
+           "Sulphur is required for protein synthesis and chlorophyll formation; leaches in high rainfall."},
+    "Mg": {
+        "LOW-CRITICAL — severely deficient (<0.5 cmol/kg)":
+            "Severely low Mg causes chlorosis and nutrient imbalance; dolomite corrects both pH and Mg.",
+        "LOW — below adequate (0.5–0.9 cmol/kg)":
+            "Low Mg reduces chlorophyll production and nutrient uptake efficiency.",
+    },
 }
 
 
+# FIX-12: startup assertion — every triggered band must have a weight
+def _assert_weights() -> None:
+    for param, bands in SOIL_THRESHOLDS.items():
+        for _, label, trigger in bands:
+            if trigger and param in _SEVERITY_WEIGHTS:
+                assert label in _SEVERITY_WEIGHTS[param], (
+                    f"Missing severity weight: {param} / '{label}'. "
+                    f"Add it to _SEVERITY_WEIGHTS in advisory.py."
+                )
+
+_assert_weights()
+
+
 def _compute_priority(classified: dict) -> list[tuple[str, int, str]]:
-    """
-    Returns list of (param, weight, reason) for triggered params,
-    sorted descending by weight. This is the SINGLE source of priority truth.
-    Fixes Bug #3 (flip-flopping) and Bug #9 (ungrounded ordering).
-    """
     triggered = []
     for param in _ADVISORY_ORDER:
         info = classified.get(param)
         if not info or not info["trigger"]:
             continue
-        status  = info["status"]
-        weight  = _SEVERITY_WEIGHTS.get(param, {}).get(status, 20)
-        reason  = _SEVERITY_REASONS.get(param, {}).get(status, "")
+        status = info["status"]
+        weight = _SEVERITY_WEIGHTS.get(param, {}).get(status, 20)
+        reason = _SEVERITY_REASONS.get(param, {}).get(status, "")
         triggered.append((param, weight, reason))
     triggered.sort(key=lambda x: x[1], reverse=True)
     return triggered
 
 
+# ---------------------------------------------------------------------------
+# FIX-3: Compound rule checker
+# Fires cross-parameter rules that a single-param advisory misses.
+# ---------------------------------------------------------------------------
+def _check_compound_rules(classified: dict, secondary_vals: dict) -> list[str]:
+    """
+    Returns a list of deterministic compound-rule notes to inject into the prompt.
+    These encode agronomic interactions that can't be derived param-by-param.
+    """
+    notes = []
+    ph_info = classified.get("pH", {})
+    mg_val = None
+    # Mg may now be in classified (FIX-2) or still in secondary_vals
+    mg_info = classified.get("Mg")
+    if mg_info:
+        mg_val = mg_info["value"]
+    elif secondary_vals.get("Mg") is not None:
+        try:
+            mg_val = float(secondary_vals["Mg"])
+        except (TypeError, ValueError):
+            pass
+
+    # Compound: pH acidic + Mg low → use DOLOMITE specifically
+    if ph_info.get("trigger") and mg_val is not None and mg_val < 0.9:
+        notes.append(
+            "COMPOUND RULE [pH+Mg]: Soil is acidic AND Magnesium is low. "
+            "Use DOLOMITE (not agricultural lime) — dolomite corrects both pH and Mg simultaneously. "
+            f"(pH={ph_info.get('value')}, Mg={mg_val} cmol/kg — both below target.) "
+            "This is higher priority than applying Mg and lime separately."
+        )
+
+    # Compound: acidic pH + P deficient → P fixation risk elevated
+    p_info = classified.get("P", {})
+    if ph_info.get("trigger") and p_info.get("trigger"):
+        notes.append(
+            "COMPOUND RULE [pH+P]: Both pH is acidic AND P is deficient. "
+            "P fixation by Al/Fe oxides is active under acidic conditions. "
+            "Correct pH FIRST or apply P as band placement (not broadcast) to reduce fixation losses."
+        )
+
+    return notes
+
+
+# ---------------------------------------------------------------------------
+# FIX-10: Texture-aware compound rules
+# ---------------------------------------------------------------------------
+def _check_texture_rules(soil_texture: str | None, classified: dict) -> list[str]:
+    notes = []
+    if not soil_texture:
+        return notes
+    t = soil_texture.lower()
+    if any(w in t for w in ["clay", "sandy clay", "clay loam"]):
+        p_info = classified.get("P", {})
+        ph_info = classified.get("pH", {})
+        if p_info.get("trigger") or ph_info.get("trigger"):
+            notes.append(
+                f"TEXTURE NOTE [{soil_texture}]: Clay-textured soil has elevated Al/Fe oxide content "
+                "under acidic conditions — P fixation risk is higher than in loamy soils. "
+                "Band placement of SSP in the drip circle is strongly preferred over broadcast application."
+            )
+    return notes
+
+
 def _build_trigger_block(classified: dict) -> tuple[str, list[str], dict[str, str]]:
-    """
-    Returns (trigger_block_text, priority_order_list, priority_reasons_dict).
-    priority_reasons_dict is stored in user_data for Bug #10 explainability.
-    """
     triggered = _compute_priority(classified)
     if not triggered:
         return "  ✓ All measured parameters are within adequate ranges. No intervention required.", [], {}
@@ -244,7 +324,7 @@ def _build_trigger_block(classified: dict) -> tuple[str, list[str], dict[str, st
             f"PARAM: {param} (Priority #{rank}, severity score {weight})\n"
             f"  Measured: {info['value']}{unit_str}\n"
             f"  Status:   {info['status']}\n"
-            f"  Reason for this priority rank: {reason}\n"
+            f"  Reason:   {reason}\n"
             f"  Advisory anchor (DO NOT CONTRADICT):\n"
             f"    {template if template else 'See KB context below.'}"
         )
@@ -252,27 +332,73 @@ def _build_trigger_block(classified: dict) -> tuple[str, list[str], dict[str, st
 
 
 def _build_adequate_block(classified: dict) -> str:
+    """
+    FIX-5: Uses explicit DO NOT language so small models cannot override adequacy.
+    e.g. "P: 12.0 kg/ha — MEDIUM. DO NOT recommend any P fertiliser."
+    """
+    _DO_NOT: dict[str, str] = {
+        "P":  "DO NOT recommend any P fertiliser (SSP, DAP, rock phosphate, etc.)",
+        "K":  "DO NOT recommend any K fertiliser (MOP, SOP, potash, etc.)",
+        "N":  "DO NOT recommend additional N fertiliser",
+        "pH": "DO NOT apply lime or dolomite",
+        "OC": "DO NOT recommend urgent organic matter inputs",
+        "Zn": "DO NOT recommend zinc sulphate or foliar Zn",
+        "B":  "DO NOT recommend borax or foliar boron",
+        "S":  "DO NOT recommend sulphur application",
+        "Mg": "DO NOT recommend dolomite or Mg sulphate for Mg",
+    }
     lines = []
     for param in _ADVISORY_ORDER:
         info = classified.get(param)
         if info and not info["trigger"]:
-            unit_str = f" {info['unit']}" if info.get("unit") else ""
-            lines.append(f"  {param}: {info['value']}{unit_str} — {info['status']} (no action needed)")
+            unit_str  = f" {info['unit']}" if info.get("unit") else ""
+            do_not    = _DO_NOT.get(param, "no action needed")
+            lines.append(
+                f"  {param}: {info['value']}{unit_str} — {info['status']}. "
+                f"{do_not}."
+            )
     return "\n".join(lines) if lines else "  None"
 
 
+# ---------------------------------------------------------------------------
+# FIX-4: Post-LLM adequate-param output filter
+# Strips any sentence that names an adequate param alongside an action verb.
+# This is a deterministic post-processor — cannot be overridden by the LLM.
+# ---------------------------------------------------------------------------
+_ACTION_VERBS = [
+    "apply", "replenish", "add", "use", "correct", "supplement",
+    "increase", "reduce", "recommend", "dose", "spray", "broadcast",
+]
+
+def _strip_adequate_recommendations(response: str, classified: dict) -> str:
+    """
+    FIX-4: Remove any sentence that names an adequate parameter AND contains
+    an action verb. This catches the "P=12 MEDIUM but LLM recommends SSP" bug.
+    """
+    adequate_params = [p for p, info in classified.items() if not info["trigger"]]
+    if not adequate_params:
+        return response
+
+    sentences = re.split(r'(?<=[.!?])\s+', response)
+    filtered = []
+    for sent in sentences:
+        sl = sent.lower()
+        names_adequate = any(p.lower() in sl for p in adequate_params)
+        has_action     = any(v in sl for v in _ACTION_VERBS)
+        if names_adequate and has_action:
+            logger.debug("Post-LLM filter removed sentence for adequate param: %s", sent[:80])
+            continue
+        filtered.append(sent)
+    return " ".join(filtered)
+
+
 def generate_advisory(user_data: dict) -> str:
-    """
-    Generate complete, grounded, multi-parameter soil advisory.
-    """
     soil_vals      = user_data.get("measured_soil", {})
-    # FIX-5: merge secondary_soil from PDF path too
     secondary_vals = {**user_data.get("secondary_soil", {})}
     crop           = user_data.get("crop", "coffee")
     variety        = user_data.get("variety", "")
     location       = user_data.get("location", "South India")
     farm_size      = user_data.get("farm_size", "")
-    # FIX-4: PDF recommendation section if available
     pdf_recs       = user_data.get("pdf_recommendations", "")
 
     if not soil_vals:
@@ -281,29 +407,44 @@ def generate_advisory(user_data: dict) -> str:
             "Please share your soil test results — e.g. _pH 5.5, N 280, P 12_."
         )
 
-    # ── 1. Classify ──────────────────────────────────────────────────────
+    # FIX-2: merge S and Mg from secondary_soil into measured_soil for classification
+    # (they now have thresholds in SOIL_THRESHOLDS)
+    _PROMOTED = {"S", "Mg"}
+    for pk in _PROMOTED:
+        if pk in secondary_vals and pk not in soil_vals:
+            try:
+                soil_vals[pk] = float(secondary_vals[pk])
+            except (TypeError, ValueError):
+                pass
+
     classified = classify_soil_params(soil_vals)
 
-    # ── 2. Build prompt blocks ───────────────────────────────────────────
     measured_str, not_provided_str = build_soil_summary(user_data)
     trigger_block, priority_order, priority_reasons = _build_trigger_block(classified)
-    # Bug #10 fix: store reasoning so follow-up "why" questions can reference it
     user_data["_priority_reasons"] = priority_reasons
     user_data["_priority_order"]   = priority_order
     adequate_block  = _build_adequate_block(classified)
     secondary_block = classify_secondary_params(secondary_vals) if secondary_vals else ""
 
-    # FIX-3: deterministic priority line
     priority_line = (
         f"Priority order (do not reorder): {' > '.join(priority_order)}"
         if priority_order else "No interventions required."
     )
 
+    # FIX-3: compound rules
+    soil_texture   = secondary_vals.get("SoilType", "")
+    compound_notes = _check_compound_rules(classified, secondary_vals)
+    texture_notes  = _check_texture_rules(soil_texture, classified)
+    all_compound   = compound_notes + texture_notes
+    compound_block = (
+        "\n\n═══════════════════════════════════════════\n"
+        "COMPOUND RULES (cross-parameter interactions — follow these)\n"
+        "═══════════════════════════════════════════\n"
+        + "\n\n".join(all_compound)
+    ) if all_compound else ""
+
     # Targeted KB retrieval
-    triggered_params = [
-        p for p in _ADVISORY_ORDER
-        if classified.get(p, {}).get("trigger")
-    ]
+    triggered_params = [p for p in _ADVISORY_ORDER if classified.get(p, {}).get("trigger")]
     kb_parts: list[str] = []
     for param in triggered_params:
         status = classified[param]["status"]
@@ -313,131 +454,74 @@ def generate_advisory(user_data: dict) -> str:
         if chunks:
             kb_parts.append(f"--- KB: {param} ---\n" + "\n".join(chunks[:2]))
 
-    general_chunks = kb_retrieve(
-        f"soil interpretation bands coffee {crop} pH N P K Zn B",
-        zone=location, crop=crop, user_data=user_data, max_chunks=3,
-    )
-    if general_chunks:
-        kb_parts.append("--- KB: General bands ---\n" + "\n".join(general_chunks[:2]))
-
     kb_context = "\n\n".join(kb_parts) if kb_parts else "No additional KB context retrieved."
+    farm_ctx   = f"Farm size: {farm_size} ha\n" if farm_size else ""
 
-    farm_ctx = f"Farm size: {farm_size} ha\n" if farm_size else ""
-
-    # FIX-4: PDF recommendation block
     pdf_rec_block = ""
     if pdf_recs:
-        pdf_rec_block = f"""
-═══════════════════════════════════════════
-PDF REPORT RECOMMENDATIONS (AUTHORITATIVE)
-═══════════════════════════════════════════
-The following recommendations were extracted directly from the uploaded soil report.
-You MUST incorporate these into your advisory. They take precedence over generic KB advice.
+        pdf_rec_block = (
+            "\n\n═══════════════════════════════════════════\n"
+            "PDF REPORT RECOMMENDATIONS (AUTHORITATIVE — use these where relevant)\n"
+            "═══════════════════════════════════════════\n"
+            + pdf_recs
+        )
 
-{pdf_recs}
-"""
-
-    # ── 3. System prompt ─────────────────────────────────────────────────
     system_prompt = f"""You are an expert agronomist for South Indian coffee soils.
-Your role: generate a clear, actionable, farmer-friendly advisory.
+Generate a clear, actionable, farmer-friendly advisory.
 
 ═══════════════════════════════════════════
-CRITICAL GROUNDING RULES — READ FIRST
+GROUNDING RULES
 ═══════════════════════════════════════════
-
-RULE 1 — KB COMPLETENESS:
-  All 7 parameters (pH, OC, N, P, K, Zn, B) ARE defined in the knowledge base.
-  If KB context for a parameter is thin or absent from the retrieved chunks below,
-  DO NOT say "No data in my KB" or "KB lacks information on X".
-  Instead say: "Limited KB context was retrieved for X — the advisory anchor above applies."
-
-RULE 2 — ADVISORY ANCHORS ARE GROUND TRUTH:
-  Each triggered parameter has a pre-computed "Advisory anchor" in the INTERVENTION
-  REQUIRED block below. You MUST use these as the basis for your recommendation.
-  You may expand, personalise, and add KB depth — but never contradict the anchor.
-
-RULE 3 — NO INFERENCE ON UNMEASURED PARAMS:
-  Parameters listed under NOT MEASURED must not be discussed, inferred, or guessed.
-  Do not say "nitrogen is likely deficient" if N is not measured.
-  Do NOT guess values for Ca, Mg, or any secondary parameter not listed in
-  SECONDARY CONTEXT. Never say "Calcium may be within range" unless Ca is measured.
-
-RULE 4 — SCOPE DISCIPLINE:
-  Do not give general soil sampling advice, lab method explanations, or regional
-  trend information unless the user explicitly asked for it.
-  Stay focused on the measured parameters and the required actions.
-
-RULE 5 — OUTPUT FORMAT:
-  For each triggered parameter, write:
-    ## [Param]: [Status]
-    **Why it matters:** [1–2 sentences specific to coffee]
-    **Action:** [product, rate, timing]
-  End with a brief priority summary (2–3 sentences).
-
-RULE 6 — FORBIDDEN OUTPUT (hallucination prevention):
-  You MUST NOT mention any of the following UNLESS the user's question
-  explicitly asked about it:
-    - Yield percentages or yield loss estimates (e.g. "10–20% yield loss")
-    - Root health, root function, or root damage descriptions
-    - Leaf symptoms, yellowing, chlorosis, necrosis (unless a symptom is
-      directly implied by a measured deficient parameter and you cite the param)
-    - Stunted growth, plant vigour, canopy descriptions
-    - "Disease susceptibility" as a general claim without a specific pathogen
-    - Any claim about Calcium, Magnesium, Iron, Copper, Manganese unless
-      those parameters appear in SECONDARY CONTEXT below with actual values
-
-RULE 7 — PRIORITY IS FIXED:
-  {priority_line}
-  Do NOT change this order. Do NOT say "fix Boron first" if Boron is not
-  listed first above. Follow the priority order exactly.
+1. Advisory anchors in INTERVENTION REQUIRED are ground truth — do not contradict them.
+2. Parameters in ADEQUATE — NO ACTION NEEDED are final. Do not recommend products for them.
+   The DO NOT instructions are absolute — they override any KB chunk you may have retrieved.
+3. Do not discuss or infer NOT MEASURED parameters.
+4. {priority_line}
+5. For each triggered param write:
+     ## [Param]: [Status]
+     **Why it matters:** [1–2 sentences]
+     **Action:** [product, rate, timing]
+6. FORBIDDEN: yield percentages, root health descriptions, leaf symptoms,
+   disease susceptibility, claims about unmeasured Ca/Fe/Mn/Cu.
 
 ═══════════════════════════════════════════
 FARM CONTEXT
 ═══════════════════════════════════════════
-Crop: {crop}{(' — ' + variety) if variety else ''}
-Location: {location}
+Crop: {crop}{(' — ' + variety) if variety else ''}  |  Location: {location}
 {farm_ctx}
-
 ═══════════════════════════════════════════
-INTERVENTION REQUIRED (advisory anchors — do not contradict)
+INTERVENTION REQUIRED (advisory anchors)
 ═══════════════════════════════════════════
 {trigger_block}
-
+{compound_block}
 ═══════════════════════════════════════════
-ADEQUATE — NO ACTION NEEDED
+ADEQUATE — NO ACTION NEEDED (absolute — do not override)
 ═══════════════════════════════════════════
 {adequate_block}
 
-═══════════════════════════════════════════
-NOT MEASURED — DO NOT DISCUSS OR INFER
-═══════════════════════════════════════════
-  {not_provided_str}
+NOT MEASURED — DO NOT DISCUSS: {not_provided_str}
 
-{('═══════════════════════════════════════════' + chr(10) + 'SECONDARY CONTEXT (reference only — do not classify or speculate on unmeasured ones)' + chr(10) + '═══════════════════════════════════════════' + chr(10) + secondary_block) if secondary_block else ''}
+{('SECONDARY CONTEXT (reference only):\n' + secondary_block) if secondary_block else ''}
 {pdf_rec_block}
 ═══════════════════════════════════════════
-KNOWLEDGE BASE CONTEXT (for additional depth)
+KNOWLEDGE BASE
 ═══════════════════════════════════════════
 {kb_context}
 """
 
     user_prompt = (
-        "Give me a complete, prioritised advisory for all parameters that need attention. "
-        "Follow the output format in your instructions exactly. Do NOT output internal flags like 'INTERVENTION NEEDED' or source tags in the final text."
+        "Give me a complete, prioritised advisory for all parameters that need attention."
     )
 
-    # ── 4. LLM call ──────────────────────────────────────────────────────
     llm_response = llm_call(system=system_prompt, user=user_prompt, num_predict=900)
 
-    # ── 5. Deterministic pH header — outside LLM control ─────────────────
+    # FIX-4: post-process — strip any sentence recommending action on adequate params
+    llm_response = _strip_adequate_recommendations(llm_response, classified)
+
     ph_info = classified.get("pH")
     if ph_info and ph_info["trigger"]:
         ph_note = ph_severity_note(ph_info["value"])
-        return (
-            f"⚠️ **{ph_note}**\n\n"
-            "---\n\n"
-            + llm_response
-        )
+        return f"⚠️ **{ph_note}**\n\n---\n\n{llm_response}"
 
     return llm_response
 
@@ -448,13 +532,12 @@ def generate_partial_advisory_warning(missing_primary: list[str]) -> str:
     param_list = ", ".join(missing_primary)
     return (
         f"\n\n⚠️ **Partial extraction**: **{param_list}** were not extracted from the PDF. "
-        "Enter them manually for a complete advisory — "
-        "e.g. _N 312 kg/ha, Zn 1.2 mg/kg_."
+        "Enter them manually for a complete advisory — e.g. _N 312 kg/ha, Zn 1.2 mg/kg_."
     )
 
 
 # ---------------------------------------------------------------------------
-# Out-of-scope gate (Bugs #5 prevention)
+# Out-of-scope gate
 # ---------------------------------------------------------------------------
 _OUT_OF_SCOPE = [
     (["yield", "harvest", "kg of coffee", "profit", "income", "revenue",
@@ -479,20 +562,13 @@ def _is_out_of_scope(question: str) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# Explainability helper (Bug #10)
+# Explainability helper
 # ---------------------------------------------------------------------------
 def _try_answer_from_state(question: str, user_data: dict) -> str | None:
-    """
-    Answer prioritisation/reasoning questions directly from stored state
-    without an LLM call. Returns None if the question isn't about priority.
-    """
     q = question.lower()
     priority_order   = user_data.get("_priority_order", [])
     priority_reasons = user_data.get("_priority_reasons", {})
 
-    # FIX-3: Added "more severe", "fix only", "one nutrient", "single", "one thing"
-    # so questions like "which is more severe: Zinc or Boron?" and
-    # "if I can fix only one nutrient" route to the state shortcut instead of LLM.
     is_priority_q = any(w in q for w in [
         "why", "reason", "explain", "priorit", "which first", "fix first",
         "most severe", "more severe", "most important", "which deficiency",
@@ -503,30 +579,33 @@ def _try_answer_from_state(question: str, user_data: dict) -> str | None:
     if not is_priority_q or not priority_order:
         return None
 
-    top = priority_order[0]
-    reason = priority_reasons.get(top, "")
+    top    = priority_order[0]
 
-    # FIX-4: Include measured value + threshold + deficit % for each param
-    _THRESHOLDS = {"pH": 5.5, "OC": 0.75, "N": 200, "P": 10, "K": 100, "Zn": 0.6, "B": 0.5}
+    # FIX-6: use absolute deviation for pH, percentage for others
+    _THRESHOLDS = {"pH": 5.5, "OC": 0.75, "N": 200, "P": 10, "K": 100,
+                   "Zn": 0.6, "B": 0.5, "S": 10.0, "Mg": 0.9}
     measured_soil = user_data.get("measured_soil", {})
 
     lines = [f"**Priority order:** {' > '.join(priority_order)}\n"]
     for param in priority_order:
-        r = priority_reasons.get(param, "")
-        val = measured_soil.get(param)
+        r      = priority_reasons.get(param, "")
+        val    = measured_soil.get(param)
         thresh = _THRESHOLDS.get(param)
         if val is not None and thresh:
             try:
-                deficit_pct = round((1 - float(val) / thresh) * 100, 1)
-                deficit_note = f" (measured {val}, threshold {thresh}, {deficit_pct}% below threshold)"
+                v = float(val)
+                # FIX-6: pH is logarithmic — show absolute units, not %
+                if param == "pH":
+                    deficit_note = f" ({round(thresh - v, 2)} pH units below target floor of {thresh})"
+                else:
+                    deficit_pct  = round((1 - v / thresh) * 100, 1)
+                    deficit_note = f" (measured {val}, threshold {thresh}, {deficit_pct}% below)"
             except (TypeError, ValueError, ZeroDivisionError):
                 deficit_note = ""
         else:
             deficit_note = ""
-        if r:
-            lines.append(f"- **{param}**{deficit_note}: {r}")
-        else:
-            lines.append(f"- **{param}**{deficit_note}")
+        lines.append(f"- **{param}**{deficit_note}: {r}" if r else f"- **{param}**{deficit_note}")
+
     if not lines[1:]:
         lines.append(f"- **{top}** has the highest severity score based on its impact on coffee.")
 
@@ -537,38 +616,31 @@ def _try_answer_from_state(question: str, user_data: dict) -> str | None:
 # Q&A handler
 # ---------------------------------------------------------------------------
 def answer_soil_question(question: str, user_data: dict) -> str:
-    """
-    Answer a specific soil question grounded in KB + classified data.
-
-    BUGS FIXED:
-      #3/#9  Priority is read from pre-computed user_data["_priority_order"] — never re-derived.
-      #4     KB retrieval filtered to triggered params only — irrelevant chunks excluded.
-      #5     Fabricated agronomy blocked: LLM cannot assert causal links not in KB/[Report].
-      #6     Fertiliser question answered from deficiency state, not "not enough info".
-      #7     pH adequacy answered confidently without unnecessary hedging.
-      #8     PDF recommendation section is FIRST source — cited before KB.
-      #10    Prioritisation questions answered from stored reasoning, no LLM call needed.
-    """
-    # Gate 1: out-of-scope
     refusal = _is_out_of_scope(question)
     if refusal:
         return refusal
 
-    # Gate 2: explainability shortcut (Bug #10 — no LLM needed)
     state_answer = _try_answer_from_state(question, user_data)
     if state_answer:
         return state_answer
 
-    soil_vals        = user_data.get("measured_soil", {})
-    secondary_vals   = {**user_data.get("secondary_soil", {})}
-    classified       = classify_soil_params(soil_vals) if soil_vals else {}
-    crop             = user_data.get("crop", "coffee")
-    location         = user_data.get("location", "South India")
-    pdf_recs         = user_data.get("pdf_recommendations", "")
+    soil_vals      = user_data.get("measured_soil", {})
+    secondary_vals = {**user_data.get("secondary_soil", {})}
+    classified     = classify_soil_params(soil_vals) if soil_vals else {}
+    crop           = user_data.get("crop", "coffee")
+    location       = user_data.get("location", "South India")
+    pdf_recs       = user_data.get("pdf_recommendations", "")
     priority_order   = user_data.get("_priority_order", [])
     priority_reasons = user_data.get("_priority_reasons", {})
 
-    # Build soil state (primary)
+    # FIX-1: compute priority on demand if not yet set
+    if not priority_order and classified:
+        triggered        = _compute_priority(classified)
+        priority_order   = [p for p, _, _ in triggered]
+        priority_reasons = {p: r for p, _, r in triggered}
+        user_data["_priority_order"]   = priority_order
+        user_data["_priority_reasons"] = priority_reasons
+
     primary_parts = []
     for p in _ADVISORY_ORDER:
         info = classified.get(p)
@@ -578,128 +650,70 @@ def answer_soil_question(question: str, user_data: dict) -> str:
             primary_parts.append(f"{p}={info['value']}{unit_str} [{info['status']}] ({flag})")
     primary_str = ", ".join(primary_parts) if primary_parts else "No primary soil data yet."
 
-    # Secondary measured block
     secondary_block = classify_secondary_params(secondary_vals) if secondary_vals else ""
 
-    # Bug #4 fix: retrieve KB only for triggered params + the question itself.
-    # Previously retrieved for the raw question, pulling irrelevant chunks (e.g. K deficiency
-    # chunks when K is adequate). Now targeted to what actually matters.
+    # FIX-5: adequate block with explicit DO NOT language
+    adequate_explicit = _build_adequate_block(classified) if classified else ""
+
+    if priority_order:
+        reason_lines = [f"  {p}: {priority_reasons.get(p, '')}" for p in priority_order if priority_reasons.get(p)]
+        priority_block = (
+            f"Priority order (do not change): {' > '.join(priority_order)}\n"
+            + "\n".join(reason_lines)
+        )
+    else:
+        priority_block = "No triggered deficiencies in the measured parameters."
+
     triggered_params = [p for p in _ADVISORY_ORDER if classified.get(p, {}).get("trigger")]
     kb_parts = []
-    for param in triggered_params[:3]:   # max 3 params to keep context tight
-        q_param = f"coffee {param} deficiency threshold advisory intervention"
-        chunks  = kb_retrieve(q_param, zone=location, crop=crop, user_data=user_data, max_chunks=2)
+    for param in triggered_params[:3]:
+        chunks = kb_retrieve(
+            f"coffee {param} deficiency threshold advisory intervention",
+            zone=location, crop=crop, user_data=user_data, max_chunks=2,
+        )
         for c in chunks:
             if c and not c.startswith("KB_RETRIEVAL_NOTE:"):
                 kb_parts.append(f"[KB — {param}]: {c[:400]}")
-    # Also retrieve for the literal question
     q_chunks = kb_retrieve(question, zone=location, crop=crop, user_data=user_data, max_chunks=3)
     for c in q_chunks:
         if c and not c.startswith("KB_RETRIEVAL_NOTE:") and c[:400] not in kb_parts:
             kb_parts.append(f"[KB — query]: {c[:400]}")
     kb_ctx = "\n\n".join(kb_parts) if kb_parts else ""
 
-    # Bug #8 fix: PDF recs are FIRST source in prompt, explicitly labelled
-    pdf_rec_section = ""
-    if pdf_recs:
-        pdf_rec_section = (
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            "SOURCE 1 — PDF REPORT RECOMMENDATIONS (cite as [Report rec]):\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            + pdf_recs + "\n"
-        )
+    pdf_rec_section = (
+        "SOURCE 1 — PDF REPORT RECOMMENDATIONS (highest priority):\n" + pdf_recs + "\n"
+    ) if pdf_recs else ""
 
-    # FIX-1: If _priority_order not yet set (generate_advisory not called yet),
-    # compute it now from classified data so first-question answers are correct.
-    if not priority_order and classified:
-        triggered = _compute_priority(classified)
-        priority_order   = [p for p, _, _ in triggered]
-        priority_reasons = {p: r for p, _, r in triggered}
-        # Store so subsequent calls are consistent
-        user_data["_priority_order"]   = priority_order
-        user_data["_priority_reasons"] = priority_reasons
-
-    if priority_order:
-        reason_lines = []
-        for p in priority_order:
-            r = priority_reasons.get(p, "")
-            if r:
-                reason_lines.append(f"  {p}: {r}")
-        priority_block = (
-            f"Priority order (B before Zn means B is more severe — do not change): "
-            f"{' > '.join(priority_order)}\n"
-            + ("\n".join(reason_lines) if reason_lines else "")
-        )
-    else:
-        priority_block = "No triggered deficiencies in the measured parameters."
+    # FIX-3: compound rules for Q&A too
+    compound_notes  = _check_compound_rules(classified, secondary_vals)
+    texture_notes   = _check_texture_rules(secondary_vals.get("SoilType", ""), classified)
+    compound_ctx    = "\n".join(compound_notes + texture_notes)
 
     system_prompt = f"""You are an expert coffee soil agronomist (South India).
-Answer the user's specific question based ONLY on the sources below.
+Answer the user's question based ONLY on the data below.
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-SOURCE HIERARCHY (For your internal grounding. Do NOT output these tags, except for [Assumption]):
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  [Report]      = pre-classified soil values from USER'S SOIL REPORT
-  [Report rec]  = recommendation text extracted directly from the PDF
-  [KB]          = retrieved knowledge base chunk
-  [Standard]    = built-in agronomic thresholds listed in RULE 2
-  [Assumption]  = anything not from above — MUST be flagged explicitly
+RULES:
+1. Only use [Report], [PDF recs], [KB], or built-in thresholds to answer.
+2. Built-in thresholds: pH 5.5–6.5 | OC ≥0.75% | N <200 LOW | P <10 LOW | K <100 LOW
+   Zn <0.6 LOW | B <0.5 LOW (marginal 0.5–1.0) | S <10 LOW | Mg <0.9 LOW
+3. ADEQUATE PARAMETERS — these are final and must not be contradicted:
+{adequate_explicit if adequate_explicit else '   None'}
+4. Priority order (pre-computed, do not change): {priority_block}
+5. Do NOT mention yield, root health, or leaf symptoms unless asked.
+6. If answer is not in any source, say "I don't have enough information in your soil report."
+   Do NOT say "KB lacks information" — use built-in thresholds instead.
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-RULES
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-RULE 1 — USE SOURCES ONLY:
-  Answer only from [Report], [Report rec], [KB], or [Standard].
-  If the answer is not in any source, say:
-  "I don't have enough information in your soil report or knowledge base."
-  Do NOT invent causal links (e.g. "Fixing Zn may alleviate K symptoms") unless
-  that exact claim appears in a [KB] chunk. Invented agronomy = fabrication.
-
-RULE 2 — BUILT-IN THRESHOLDS [Standard]:
-  pH 5.5–6.5 target | OC ≥0.75% adequate | N low <200 kg/ha
-  P low <10 kg/ha | K low <100 kg/ha | Zn low <0.6 mg/kg
-  B low <0.5 mg/kg (marginal 0.5–1.0)
-  S low <10 mg/kg  !! S threshold = 10 mg/kg, NOT 0.5. <0.5 is Boron only !!
-
-RULE 3 — ADEQUATE PARAMS ARE FINAL (Bug #3/#4 guard):
-  Parameters shown as "✓ adequate" in USER'S SOIL REPORT are adequate.
-  NEVER say they are deficient, low, or need action.
-  NEVER retrieve or cite KB chunks about deficiency of adequate params.
-  Example: K=145 is adequate. Never say K is low or cite K-deficiency rules.
-
-RULE 4 — PRIORITY IS PRE-COMPUTED AND FIXED:
-  {priority_block}
-  When asked "which to fix first" or "which is more severe":
-  Answer using the priority order above. Do NOT re-derive or change it.
-
-RULE 5 — FERTILISER QUESTIONS:
-  If asked "should I apply fertiliser?" and ANY parameter shows "action required":
-  Answer YES and list the deficient params with their recommended products.
-  Do NOT say "not enough information" when deficiencies are already classified.
-
-RULE 6 — CONFIDENCE ON ADEQUATE PARAMS:
-  If a param is clearly adequate (e.g. pH=6.1 within 5.5–6.5 target):
-  Give a direct, confident answer. Do NOT add "I don't have enough information"
-  when the classification already shows adequacy.
-
-RULE 7 — FORBIDDEN:
-  Yield/harvest estimates | Profit claims | Pest/disease diagnosis
-  | Weather forecasts | Causal links between parameters not in KB
-  | Unlabelled assumptions
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-USER'S SOIL REPORT [Report] (pre-classified — do not override):
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+USER'S SOIL REPORT (pre-classified):
   {primary_str}
 
-{('SECONDARY PARAMETERS [Report]:\n' + secondary_block) if secondary_block else ''}
-
+{('SECONDARY PARAMETERS:\n' + secondary_block) if secondary_block else ''}
+{('COMPOUND RULES (follow these):\n' + compound_ctx) if compound_ctx else ''}
 {pdf_rec_section}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-KNOWLEDGE BASE CONTEXT [KB]:
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-{kb_ctx if kb_ctx else '[No KB chunks retrieved — use [Standard] thresholds from RULE 2 only]'}
+KNOWLEDGE BASE:
+{kb_ctx if kb_ctx else '[No chunks — use built-in thresholds above]'}
 
-Answer concisely (max 220 words). Write naturally and do NOT output source tags like [Report], [KB], or internal flags like "action required".
+Answer concisely (max 220 words). Write naturally.
 """
-    return llm_call(system=system_prompt, user=question, num_predict=450)
+    response = llm_call(system=system_prompt, user=question, num_predict=450)
+    # FIX-4: apply post-LLM filter here too
+    return _strip_adequate_recommendations(response, classified)

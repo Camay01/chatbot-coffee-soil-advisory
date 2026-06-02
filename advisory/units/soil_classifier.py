@@ -1,33 +1,31 @@
 """
 soil_classifier.py — Deterministic soil parameter classification.
 
-All numeric-to-band mapping lives here.  The LLM must NEVER re-classify
-these numbers; it only receives the pre-computed status labels.
-
-FIXES in this version:
-  - ph_severity_note: clarified band boundary comments; the function logic
-    was correct but the SOIL_THRESHOLDS band-1 label said "below 5.0" which
-    was confusing. Now aligned with config.py's corrected label "severe acidity".
-  - build_classified_soil_block: added unit display alongside value.
-  - Added classify_secondary_params() for Mg, S, Ca, EC display.
+CHANGES:
+  FIX-2:  S and Mg now classified via SOIL_THRESHOLDS (moved from secondary-only).
+  FIX-11: classify_secondary_params() imports thresholds from SECONDARY_THRESHOLDS
+          in config.py — single source of truth, no more threshold duplication.
+  FIX-6:  ph_severity_note() no longer shows a % deficit (meaningless for log scale);
+          shows absolute deviation in pH units instead.
 """
 
-from config import SOIL_PARAMS, SOIL_THRESHOLDS, SECONDARY_PARAMS
+from __future__ import annotations
+from config import SOIL_PARAMS, SOIL_THRESHOLDS, SECONDARY_PARAMS, SECONDARY_THRESHOLDS
+
 
 def classify_soil_params(soil_vals: dict) -> dict:
     """
     Classify each measured soil value into a status band.
+    Now includes S and Mg (moved into SOIL_THRESHOLDS — FIX-2).
 
     Returns:
         {param: {"value": float, "unit": str, "status": str, "trigger": bool}}
-
-    This is the ONLY place in the codebase that compares numeric soil values
-    to thresholds.
     """
-    # Unit labels for display alongside classified values
     _UNITS = {
-        "pH": "",  "OC": "%",    "N": "kg/ha",
-        "P":  "kg/ha", "K": "kg/ha", "Zn": "mg/kg", "B": "mg/kg",
+        "pH": "",      "OC": "%",     "N": "kg/ha",
+        "P":  "kg/ha", "K": "kg/ha",  "Zn": "mg/kg", "B": "mg/kg",
+        # FIX-2: units for S and Mg now that they are primary-classified
+        "S":  "mg/kg", "Mg": "cmol/kg",
     }
 
     classified = {}
@@ -54,10 +52,6 @@ def classify_soil_params(soil_vals: dict) -> dict:
 
 
 def build_classified_soil_block(classified: dict) -> str:
-    """
-    Render pre-classified soil results as a deterministic prompt block.
-    The LLM sees status labels and units, not raw numbers to re-interpret.
-    """
     if not classified:
         return "No soil parameters classified."
     lines = []
@@ -71,10 +65,6 @@ def build_classified_soil_block(classified: dict) -> str:
 
 
 def condition_gate(classified: dict, param: str) -> bool:
-    """
-    Returns True only if the given parameter was measured AND its trigger is True.
-    Use this as a gate before recommending any intervention.
-    """
     entry = classified.get(param)
     if entry is None:
         return False
@@ -82,11 +72,6 @@ def condition_gate(classified: dict, param: str) -> bool:
 
 
 def build_soil_summary(user_data: dict) -> tuple[str, str]:
-    """
-    Build two human-readable strings:
-      measured_str     — parameters the user actually provided
-      not_provided_str — parameters NOT provided (LLM must not infer deficiency)
-    """
     measured = user_data.get("measured_soil", {})
     measured_parts, not_provided_parts = [], []
     for key, label in SOIL_PARAMS:
@@ -99,31 +84,20 @@ def build_soil_summary(user_data: dict) -> tuple[str, str]:
     return measured_str, not_provided_str
 
 
-# ---------------------------------------------------------------------------
-# Secondary parameters (display only — no classification thresholds)
-# ---------------------------------------------------------------------------
-
 def classify_secondary_params(secondary_vals: dict) -> str:
     """
-    Format all secondary parameters and metadata for display.
-    Covers nutrients, soil indices (CEC/BaseSat/SAR), and text metadata (SoilType).
+    FIX-11: Thresholds imported from config.SECONDARY_THRESHOLDS — single source.
+    No more parallel threshold definitions.
     """
     if not secondary_vals:
         return ""
+
     _UNITS = {
         "Mg": "cmol/kg", "S": "mg/kg", "Ca": "cmol/kg",
-        "EC": "dS/m",    "Fe": "mg/kg", "Mn": "mg/kg", "Cu": "mg/kg",
+        "EC": "dS/m", "Fe": "mg/kg", "Mn": "mg/kg", "Cu": "mg/kg",
         "CEC": "cmol(+)/kg", "BaseSat": "%", "SAR": "",
     }
-    _INTERP = {
-        "Mg":      lambda v: "Low" if v < 0.9  else ("Adequate" if v <= 2.5 else "High"),
-        "Ca":      lambda v: "Low" if v < 2.0  else ("Adequate" if v <= 6.0 else "High"),
-        "S":       lambda v: "Low" if v < 10   else "Adequate",   # 10 mg/kg correct threshold
-        "EC":      lambda v: "Non-saline" if v < 0.2 else ("Slightly saline" if v < 0.4 else "Saline"),
-        "CEC":     lambda v: "Low" if v < 10   else ("Medium" if v <= 20 else "High"),
-        "BaseSat": lambda v: "Low" if v < 50   else ("Adequate" if v <= 80 else "High"),
-        "SAR":     lambda v: "Normal" if v < 13 else "High sodicity risk",
-    }
+
     lines = []
     for param, val in secondary_vals.items():
         if param == "SoilType":
@@ -139,47 +113,49 @@ def classify_secondary_params(secondary_vals: dict) -> str:
             v = float(val)
         except (TypeError, ValueError):
             continue
-        unit      = _UNITS.get(param, "")
-        interp_fn = _INTERP.get(param)
-        interp    = f" — {interp_fn(v)}" if interp_fn else ""
-        unit_str  = f" {unit}" if unit else ""
-        lines.append(f"  {param}: {v}{unit_str}{interp}  (reference only)")
+
+        unit = _UNITS.get(param, "")
+        unit_str = f" {unit}" if unit else ""
+
+        # FIX-11: use SECONDARY_THRESHOLDS from config for interpretation
+        bands = SECONDARY_THRESHOLDS.get(param)
+        if bands:
+            interp = "Unknown"
+            for upper, label, _ in bands:
+                if upper is None or v < upper:
+                    interp = label
+                    break
+        else:
+            interp = ""
+
+        interp_str = f" — {interp}" if interp else ""
+        lines.append(f"  {param}: {v}{unit_str}{interp_str}  (reference only)")
+
     return "\n".join(lines)
 
 
-# ---------------------------------------------------------------------------
-# pH severity helper
-# ---------------------------------------------------------------------------
-
 def ph_severity_note(ph_value: float) -> str:
     """
-    Return a calibrated, coffee-specific pH severity note.
-    Target band for South Indian coffee: 5.5–6.5.
-
-    Bands (aligned with SOIL_THRESHOLDS in config.py):
-      < 5.0  → severe / high-priority
-      5.0–5.5 → moderate
-      5.5–6.5 → within target
-      > 6.5  → above target
+    FIX-6: Shows absolute pH deviation (e.g. "0.4 pH units below target floor of 5.5")
+    instead of a percentage (meaningless on a log scale).
     """
     if ph_value < 5.0:
+        dev = round(5.5 - ph_value, 2)
         return (
-            f"HIGH-PRIORITY SOIL CORRECTION — pH {ph_value} indicates severe soil acidity, "
-            f"well below the 5.5–6.5 target band for South Indian coffee. "
-            f"Root growth is inhibited, phosphorus fixation is likely (reducing fertiliser efficiency), "
-            f"and aluminium/manganese may reach toxic levels. Blossom and berry development are adversely affected. "
-            f"Soil acidity correction must be the FIRST PRIORITY before any NPK application. "
-            f"Apply agricultural lime or dolomite (dolomite preferred where Mg is also low). "
-            f"Ideal application timing: November (pre-blossom), kept separate from fertilisers. "
-            f"Maintain mulch cover to improve soil buffering capacity."
+            f"HIGH-PRIORITY SOIL CORRECTION — pH {ph_value} is {dev} pH units below the "
+            f"5.5–6.5 target band for South Indian coffee. "
+            f"Phosphorus fixation is active at this pH; aluminium/manganese may be at toxic levels. "
+            f"Soil acidity correction is the FIRST PRIORITY — apply dolomite (preferred where Mg is low) "
+            f"or agricultural lime in November, separate from NPK fertilisers by ≥2 weeks."
         )
     elif ph_value < 5.5:
+        dev = round(5.5 - ph_value, 2)
         return (
-            f"MODERATE-PRIORITY SOIL CORRECTION — pH {ph_value} is below the 5.5–6.5 target band. "
-            f"Phosphorus availability may be reduced due to fixation, and fertiliser response could be "
-            f"impaired over time. Lime or dolomite application is recommended before the next NPK cycle "
-            f"— preferably around November, kept separate from fertilisers. "
-            f"Maintaining mulch and organic matter will improve soil buffering capacity."
+            f"MODERATE-PRIORITY SOIL CORRECTION — pH {ph_value} is {dev} pH units below "
+            f"the 5.5 target floor for South Indian coffee. "
+            f"Phosphorus availability may be reduced; fertiliser efficiency could be impaired. "
+            f"Apply lime or dolomite before the next NPK cycle — preferably November, "
+            f"separate from fertilisers."
         )
     elif ph_value <= 6.5:
         return (

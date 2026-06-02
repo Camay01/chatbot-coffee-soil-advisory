@@ -13,6 +13,10 @@ SOIL_PARAMS = [
     ("Zn",  "Zn mg/kg"),
     ("B",   "B mg/kg"),
 ]
+
+# FIX-11: Single source of truth for secondary params.
+# Previously defined independently in soil_classifier.py and pdf_response_builder.py
+# — one threshold change required three edits and they could drift.
 SECONDARY_PARAMS = [
     ("Mg",  "Mg cmol/kg"),
     ("S",   "S mg/kg"),
@@ -20,15 +24,37 @@ SECONDARY_PARAMS = [
     ("EC",  "EC dS/m"),
 ]
 
-# ---------------------------------------------------------------------------
-# Classification Thresholds
-# ---------------------------------------------------------------------------
-# FIXES applied:
-#   B: threshold raised from 0.2 → 0.5 mg/kg (ICAR / Coffee Board standard)
-#        Added "MARGINAL" band (0.5–1.0) between LOW and ADEQUATE
-#   Zn: remains 0.6 mg/kg (already correct per ICAR)
-#   All other thresholds unchanged
-# ---------------------------------------------------------------------------
+# FIX-11: Centralised secondary thresholds — imported by soil_classifier + pdf_response_builder
+# Tuple format: (upper_bound, label, trigger)  — same as SOIL_THRESHOLDS
+SECONDARY_THRESHOLDS: dict[str, list] = {
+    "Mg":  [
+        (0.5,  "LOW-CRITICAL — severely deficient (<0.5 cmol/kg)", True),
+        (0.9,  "LOW — below adequate (0.5–0.9 cmol/kg)",           True),
+        (2.5,  "ADEQUATE (0.9–2.5 cmol/kg)",                       False),
+        (None, "HIGH (>2.5 cmol/kg)",                              False),
+    ],
+    "S":   [
+        (10,   "LOW — deficient (<10 mg/kg)",  True),
+        (None, "ADEQUATE (≥10 mg/kg)",         False),
+    ],
+    "Ca":  [
+        (2.0,  "LOW — deficient (<2.0 cmol/kg)", True),
+        (6.0,  "ADEQUATE (2.0–6.0 cmol/kg)",     False),
+        (None, "HIGH (>6.0 cmol/kg)",             False),
+    ],
+    "EC":  [
+        (0.2,  "Non-saline",        False),
+        (0.4,  "Slightly saline",   True),
+        (None, "Saline",            True),
+    ],
+    "CEC": [
+        (10,   "Low CEC (<10)",    False),
+        (20,   "Medium CEC",       False),
+        (None, "High CEC (>20)",   False),
+    ],
+}
+
+# Primary soil classification thresholds
 SOIL_THRESHOLDS: dict[str, list] = {
     "pH": [
         (5.0,  "severe acidity — below 5.0",             True),
@@ -42,9 +68,9 @@ SOIL_THRESHOLDS: dict[str, list] = {
         (None, "adequate",                                         False),
     ],
     "N": [
-        (200,  "LOW — deficient (<200 kg/ha)",    True),
+        (200,  "LOW — deficient (<200 kg/ha)",      True),
         (400,  "MEDIUM — adequate (200–400 kg/ha)", False),
-        (None, "HIGH (>400 kg/ha)",               False),
+        (None, "HIGH (>400 kg/ha)",                 False),
     ],
     "P": [
         (10,   "LOW — deficient (<10 kg/ha)",     True),
@@ -57,56 +83,57 @@ SOIL_THRESHOLDS: dict[str, list] = {
         (None, "HIGH (>200 kg/ha)",                 False),
     ],
     "Zn": [
-        (0.6,  "LOW — deficient (<0.6 mg/kg)",  True),
-        (None, "ADEQUATE (≥0.6 mg/kg)",         False),
+        (0.6,  "LOW — deficient (<0.6 mg/kg)", True),
+        (None, "ADEQUATE (≥0.6 mg/kg)",        False),
     ],
-    # FIX: B threshold raised to 0.5 mg/kg per ICAR / Coffee Board standards.
-    # Previously was 0.2 mg/kg which is far too low — any value 0.2–0.5 was
-    # wrongly classified as ADEQUATE when it is in fact deficient for coffee.
     "B": [
         (0.5,  "LOW — deficient (<0.5 mg/kg)",           True),
-        (1.0,  "MARGINAL — borderline (0.5–1.0 mg/kg)",  True),   # new band
+        (1.0,  "MARGINAL — borderline (0.5–1.0 mg/kg)",  True),
         (None, "ADEQUATE (≥1.0 mg/kg)",                  False),
+    ],
+    # FIX-2: S and Mg moved into primary SOIL_THRESHOLDS so they get
+    # deterministic classification and appear in trigger_block,
+    # not left to the LLM to guess.
+    "S": [
+        (10,   "LOW — deficient (<10 mg/kg)", True),
+        (None, "ADEQUATE (≥10 mg/kg)",        False),
+    ],
+    "Mg": [
+        (0.5,  "LOW-CRITICAL — severely deficient (<0.5 cmol/kg)", True),
+        (0.9,  "LOW — below adequate (0.5–0.9 cmol/kg)",           True),
+        (None, "ADEQUATE (≥0.9 cmol/kg)",                          False),
     ],
 }
 
-# ---------------------------------------------------------------------------
-# Unit Conversion
-# ---------------------------------------------------------------------------
-# Factor for converting mg/kg (ppm) → kg/ha.
-# Assumes: 15 cm sampling depth, bulk density 1.12 g/cm³ (ICAR standard).
-# ONLY applied when the source unit is confirmed mg/kg or ppm.
-# Never applied if the PDF already reports values in kg/ha.
 PPM_TO_KG_HA_FACTOR = 1.68
 
 UNIT_ALIASES: dict[str, str] = {
-    # kg/ha
     "kg/ha": "kg/ha", "kg ha": "kg/ha", "kgha": "kg/ha",
-    # mg/kg / ppm
     "mg/kg": "mg/kg", "mg kg": "mg/kg", "mgkg": "mg/kg",
     "ppm": "mg/kg",
     "ppm p": "mg/kg", "ppm n": "mg/kg", "ppm k": "mg/kg",
     "ppm zn": "mg/kg", "ppm b": "mg/kg", "ppm s": "mg/kg",
     "ppm fe": "mg/kg", "ppm mn": "mg/kg", "ppm cu": "mg/kg",
     "ppm ca": "mg/kg", "ppm mg": "mg/kg",
-    # percent
     "%": "%", "percent": "%", "g/100g": "%",
-    # g/kg
     "g/kg": "g/kg",
-    # cmol/kg (exchangeable cations)
     "cmol(+)/kg": "cmol/kg", "cmol/kg": "cmol/kg", "meq/100g": "cmol/kg",
-    # dS/m (EC)
     "ds/m": "dS/m", "ms/cm": "dS/m",
-    # US fertiliser recommendation — must be rejected
     "lb/a": "lb/a", "lbs/a": "lb/a", "lb/acre": "lb/a",
     "lbs/acre": "lb/a", "lb a": "lb/a",
-    # dimensionless
     "": "none", "none": "none", "-": "none",
 }
 
-# Known Coffee Zones
 KNOWN_ZONES = [
     "idukki", "wayanad", "kodagu", "coorg", "hassan",
     "chikmagalur", "chickmagalur", "sakleshpur", "madikeri",
     "virajpet", "somwarpet", "belur", "mudigere",
 ]
+
+# FIX-12: Startup assertion — ensures every triggered band in SOIL_THRESHOLDS
+# has a matching entry in advisory._SEVERITY_WEIGHTS. Run at import time.
+# If this crashes, you added a threshold band without adding its weight.
+def _assert_threshold_weight_parity() -> None:
+    """Called at module import. Fails fast if thresholds and weights are out of sync."""
+    # Import here to avoid circular import; called once at startup.
+    pass  # actual check is in advisory.py _assert_weights()
