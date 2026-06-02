@@ -1,4 +1,4 @@
-OLLAMA_MODEL = "llama3.1:8b"
+OLLAMA_MODEL = "qwen3:32b"
 CROP_VARIETIES = {
     "Arabica": ["Cauvery", "Kent/old Arabica", "Selection 9", "Chandragiri", "S.795"],
     "Robusta": ["CxR", "Peridenia", "Old Robusta", "Clonal Robusta", "S.274"],

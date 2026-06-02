@@ -423,7 +423,7 @@ KNOWLEDGE BASE CONTEXT (for additional depth)
 
     user_prompt = (
         "Give me a complete, prioritised advisory for all parameters that need attention. "
-        "Follow the output format in your instructions exactly."
+        "Follow the output format in your instructions exactly. Do NOT output internal flags like 'INTERVENTION NEEDED' or source tags in the final text."
     )
 
     # ── 4. LLM call ──────────────────────────────────────────────────────
@@ -574,7 +574,7 @@ def answer_soil_question(question: str, user_data: dict) -> str:
         info = classified.get(p)
         if info:
             unit_str = f" {info['unit']}" if info.get("unit") else ""
-            flag     = "⚠ INTERVENTION NEEDED" if info["trigger"] else "✓ adequate"
+            flag     = "action required" if info["trigger"] else "✓ adequate"
             primary_parts.append(f"{p}={info['value']}{unit_str} [{info['status']}] ({flag})")
     primary_str = ", ".join(primary_parts) if primary_parts else "No primary soil data yet."
 
@@ -637,7 +637,7 @@ def answer_soil_question(question: str, user_data: dict) -> str:
 Answer the user's specific question based ONLY on the sources below.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-SOURCE HIERARCHY — label every factual claim with its source tag:
+SOURCE HIERARCHY (For your internal grounding. Do NOT output these tags, except for [Assumption]):
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   [Report]      = pre-classified soil values from USER'S SOIL REPORT
   [Report rec]  = recommendation text extracted directly from the PDF
@@ -673,7 +673,7 @@ RULE 4 — PRIORITY IS PRE-COMPUTED AND FIXED:
   Answer using the priority order above. Do NOT re-derive or change it.
 
 RULE 5 — FERTILISER QUESTIONS:
-  If asked "should I apply fertiliser?" and ANY parameter shows ⚠ INTERVENTION NEEDED:
+  If asked "should I apply fertiliser?" and ANY parameter shows "action required":
   Answer YES and list the deficient params with their recommended products.
   Do NOT say "not enough information" when deficiencies are already classified.
 
@@ -700,6 +700,6 @@ KNOWLEDGE BASE CONTEXT [KB]:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 {kb_ctx if kb_ctx else '[No KB chunks retrieved — use [Standard] thresholds from RULE 2 only]'}
 
-Answer concisely (max 220 words). Label every factual claim with its source tag.
+Answer concisely (max 220 words). Write naturally and do NOT output source tags like [Report], [KB], or internal flags like "action required".
 """
     return llm_call(system=system_prompt, user=question, num_predict=450)
